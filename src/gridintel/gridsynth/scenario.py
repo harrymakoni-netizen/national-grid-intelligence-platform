@@ -24,6 +24,7 @@ from gridintel.db.models import (
     GroundTruthAnomaly,
     GroundTruthConsumption,
     GroundTruthTechnicalLoss,
+    NetworkNode,
     NodeType,
     SyntheticScenario,
     VendingEvent,
@@ -207,6 +208,20 @@ def generate_scenario(session: Session, config: ScenarioConfig, *, seed: int) ->
         schedule=shed_schedule,
     )
 
+    # Persist shedding group + schedule -- otherwise this is generated,
+    # used once to distort consumption, and thrown away, leaving nothing
+    # for a downstream consumer (Module A) to condition on. A real
+    # deployment would source the schedule from ZESA's published groups
+    # (Section 9.1) rather than the generator, but the shape of what's
+    # queryable should be the same either way.
+    for transformer in topology.transformers:
+        node = session.get(NetworkNode, transformer.node_id)
+        node.attributes = {**node.attributes, "shedding_group": group_by_transformer[transformer.node_id]}
+    shedding_schedule_json = {
+        str(group): [{"dow": w.dow, "start_hour": w.start_hour, "end_hour": w.end_hour} for w in windows]
+        for group, windows in shed_schedule.items()
+    }
+
     with_anomalies, anomaly_records = inject_anomalies(
         true_consumption,
         topology.connections,
@@ -299,7 +314,7 @@ def generate_scenario(session: Session, config: ScenarioConfig, *, seed: int) ->
         id=scenario_id,
         name=f"Synthetic feeder {config.substation_id} seed={seed}",
         seed=seed,
-        config=config.config_dict(),
+        config={**config.config_dict(), "shedding_schedule_by_group": shedding_schedule_json},
         generator_version=GENERATOR_VERSION,
     )
     session.add(scenario)

@@ -100,7 +100,7 @@ def test_purchasing_never_supplies_more_than_available_balance():
     spike forces a shortfall no plausible purchase history could have
     covered, which is what we check for.
     """
-    index = pd.date_range("2026-01-01", periods=24 * 4 * 10, freq="15min", tz="UTC")
+    index = pd.date_range("2026-01-01", periods=24 * 4 * 40, freq="15min", tz="UTC")
     true_kw = np.full(len(index), 0.2)
     true_kw[-1] = 1_000_000.0  # spike no plausible accumulated balance could hold
     actual_kwh, events = purchasing.simulate_connection(

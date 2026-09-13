@@ -50,7 +50,7 @@ PURCHASE_PARAMS = {
         payday_boost=3.0,
         threshold_days=2.0,
         base_impulse_prob=0.03,
-        max_prob_per_interval=0.9,
+        max_prob_per_day=0.9,
         purchase_size_days_of_supply=(2, 6),  # off-payday top-up size
         payday_size_days_of_supply=(5, 12),
     ),
@@ -60,7 +60,7 @@ PURCHASE_PARAMS = {
         payday_boost=2.5,
         threshold_days=4.0,
         base_impulse_prob=0.02,
-        max_prob_per_interval=0.9,
+        max_prob_per_day=0.9,
         purchase_size_days_of_supply=(4, 10),
         payday_size_days_of_supply=(15, 35),
     ),
@@ -70,7 +70,7 @@ PURCHASE_PARAMS = {
         payday_boost=1.8,
         threshold_days=5.0,
         base_impulse_prob=0.03,
-        max_prob_per_interval=0.9,
+        max_prob_per_day=0.9,
         purchase_size_days_of_supply=(5, 12),
         payday_size_days_of_supply=(15, 30),
     ),
@@ -80,7 +80,7 @@ PURCHASE_PARAMS = {
         payday_boost=1.3,
         threshold_days=7.0,
         base_impulse_prob=0.05,
-        max_prob_per_interval=0.95,
+        max_prob_per_day=0.95,
         purchase_size_days_of_supply=(10, 20),
         payday_size_days_of_supply=(20, 35),
     ),
@@ -149,15 +149,23 @@ def simulate_connection(
         near_payday = days_to_payday <= params["payday_window_days"]
 
         runway_days = balance / recent_avg_daily
-        prob = params["base_impulse_prob"]
+        # All PURCHASE_PARAMS probabilities are calibrated as PER-DAY rates
+        # (e.g. "3% chance of an impulse purchase on a calm day") -- they
+        # must be converted to a per-interval probability before use, or a
+        # 30-minute loop applies them ~48 times a day and produces wildly
+        # excessive purchase frequency. This conversion was originally
+        # missing; caught by Module A reconstruction turning up a
+        # "small commercial" connection buying 51 times in 28 days.
+        prob_per_day = params["base_impulse_prob"]
         if runway_days < params["threshold_days"]:
             urgency = (params["threshold_days"] - runway_days) / params["threshold_days"]
-            prob += urgency * 0.8
+            prob_per_day += urgency * 0.8
         if near_payday:
-            prob *= params["payday_boost"]
+            prob_per_day *= params["payday_boost"]
         if balance <= 0:
-            prob = max(prob, 0.5)
-        prob = min(prob, params["max_prob_per_interval"])
+            prob_per_day = max(prob_per_day, 0.5)
+        prob_per_day = min(prob_per_day, params["max_prob_per_day"])
+        prob = 1 - (1 - prob_per_day) ** (interval_minutes / (24 * 60))
 
         if rng.random() < prob:
             lo_days, hi_days = (

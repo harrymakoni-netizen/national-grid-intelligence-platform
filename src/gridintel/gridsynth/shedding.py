@@ -18,17 +18,18 @@ Module A/B development to be meaningful against it.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 import pandas as pd
 
+from gridintel.shedding_schedule import SheddingWindow, shed_mask_for_group
 
-@dataclass
-class SheddingWindow:
-    dow: int  # 0=Monday
-    start_hour: float
-    end_hour: float
+__all__ = [
+    "SheddingWindow",
+    "shed_mask_for_group",
+    "generate_shedding_schedule",
+    "assign_groups_to_transformers",
+    "apply_shedding",
+]
 
 
 def generate_shedding_schedule(
@@ -62,23 +63,6 @@ def assign_groups_to_transformers(
     rng = np.random.default_rng(seed)
     groups = rng.integers(0, n_groups, size=len(transformer_ids))
     return {tid: int(g) for tid, g in zip(transformer_ids, groups)}
-
-
-def _in_window(hour: float, window: SheddingWindow) -> bool:
-    if window.start_hour <= window.end_hour:
-        return window.start_hour <= hour < window.end_hour
-    return hour >= window.start_hour or hour < window.end_hour  # wraps past midnight
-
-
-def shed_mask_for_group(
-    index: pd.DatetimeIndex, windows: list[SheddingWindow]
-) -> np.ndarray:
-    hours = index.hour + index.minute / 60
-    dows = index.dayofweek.to_numpy()
-    mask = np.zeros(len(index), dtype=bool)
-    for w in windows:
-        mask |= (dows == w.dow) & np.array([_in_window(h, w) for h in hours])
-    return mask
 
 
 def apply_shedding(
