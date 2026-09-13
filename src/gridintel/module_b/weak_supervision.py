@@ -149,5 +149,13 @@ def classify(features: ConnectionFeatures) -> WeakLabel:
         return WeakLabel(features.connection_id, NORMAL, confidence, votes)
 
     predicted_cause = max(anomaly_votes, key=anomaly_votes.get)
-    confidence = anomaly_votes[predicted_cause] / anomaly_mass
+    # Confidence must reflect ABSOLUTE evidence, not just how dominant the
+    # winning cause is among whatever happened to fire. Without the
+    # anomaly_mass factor, a single weak labelling function (e.g. strength
+    # 0.3, barely past its threshold) firing alone with no competing vote
+    # produced confidence 1.0 purely because there was nothing to divide
+    # against -- confirmed on real demo output, where this inflated dozens
+    # of marginal partial_bypass cases to reported confidence 1.0.
+    dominance = anomaly_votes[predicted_cause] / anomaly_mass
+    confidence = dominance * min(anomaly_mass, 1.0)
     return WeakLabel(features.connection_id, predicted_cause, confidence, votes)

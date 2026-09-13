@@ -1,10 +1,10 @@
 # National Grid Intelligence Platform
 
-Build sequence (Section 13.1) items 1-5 and 7: network hierarchy data
+Build sequence (Section 13.1) items 1-5, 7 and 8: network hierarchy data
 model, synthetic vending/network generator, ingestion and time-series
 storage, the feeder digital twin, consumption reconstruction (Module A),
-and loss attribution (Module B). Item 6 (sensing device firmware) needs
-physical hardware and is out of scope here.
+loss attribution (Module B), and the drill-down interface. Item 6
+(sensing device firmware) needs physical hardware and is out of scope here.
 Full context: [docs/National_Grid_Intelligence_Platform_v3.md](docs/National_Grid_Intelligence_Platform_v3.md).
 
 ## Setup
@@ -23,6 +23,19 @@ against SQLite. Docker is only needed to run the production-shaped stack
 ```bash
 docker compose up
 ```
+
+## Running the demo (Section 12.4)
+
+```bash
+python scripts/seed_demo_scenario.py       # generates a scenario into ./gridintel.sqlite3
+uvicorn gridintel.presentation.api:app --reload --port 8010
+```
+
+Then open `http://127.0.0.1:8010/`. This serves both the JSON API
+(`/api/*`) and the static frontend (`frontend/`) from one process. Every
+number on the page is either Module A's reconstruction, Module B's case
+output, or (only on a case's "ground truth" panel, clearly labelled)
+synthetic ground truth for validation -- never presented as a measurement.
 
 ## What's here
 
@@ -73,6 +86,15 @@ docker compose up
   honestly). `nontechnical_loss.py` is Section 7.2's energy-balance
   equation at transformer level. Stage 3 (supervised, on real field-
   confirmed labels) is deliberately not built -- no real labels exist yet.
+- `src/gridintel/presentation/` -- Layer 6, the drill-down interface's data
+  source (Section 11.3). `api.py` is a FastAPI app serving national-down-
+  to-connection navigation, aggregated consumption, and Module B's case
+  queue/detail, plus the static frontend. `aggregation.py` sums Module A's
+  reconstruction over a subtree (never ground truth).
+- `frontend/` -- the drill-down UI itself: vanilla HTML/JS + Tailwind
+  (CDN) + Chart.js, no build step. Deliberately not React/Node -- this is
+  a single internal data-browsing tool, and a build toolchain would be
+  pure overhead for it. Served by the same FastAPI process as the API.
 - `migrations/` -- Alembic migrations. `alembic upgrade head` against
   either database backend.
 - `data/processed/` -- small, git-tracked reference artefacts derived from
@@ -258,6 +280,65 @@ Stage 3 (supervised gradient-boosted classification on real field-
 confirmed outcomes, Section 8.2) is not built. No real labels exist yet --
 building it against synthetic labels would risk the model looking "ready"
 in a way that wouldn't transfer, exactly the trap Section 15 warns against.
+
+### A structural finding, not a bug: why solar recall is weak
+
+Building the drill-down interface (below) meant actually looking at
+individual cases end to end, which surfaced something the aggregate
+precision numbers above don't show on their own: solar detection is weak
+for a specific, verifiable reason, not because a threshold needs tuning.
+
+Section 8.2's solar signature is a SHAPE change: daylight consumption
+collapses, evening is untouched. Checked directly against this
+generator's own ground truth for one solar case: true daylight change was
+**-99.7%**, true evening change was **+4.9%** (noise) -- a clean, textbook
+signature, genuinely present in the data. Module A's reconstruction of
+that SAME connection showed **-84% for both**. The reason is structural:
+`segment_reconstruction.py` can only vary a connection's overall
+consumption SCALE per inter-purchase segment; it always redistributes that
+scale using the same fixed archetype diurnal template. A single scaled
+copy of one template cannot represent "only daylight changed" -- so
+Module A mechanically erases the one signature Module B most needs for
+this discrimination, before Module B ever sees the data.
+
+This is an information gap between what Module A's architecture can
+output and what solar-vs-bypass discrimination needs, confirmed with real
+numbers while building the drill-down interface below (see
+`module_b/features.py`'s docstring). It is flagged as a genuine open
+problem for future work -- extending Module A to support intra-day shape
+adjustment -- rather than patched with a threshold change that couldn't
+actually fix it. In an interactive search across 17 independent scenarios
+built while testing the demo, this generator's ~5%-rate solar injections
+were not correctly classified even once, which is a more sobering number
+than the aggregate stats above (drawn from a smaller sample) suggested.
+
+## Drill-down interface (Section 11.3 / Section 12.4's demo)
+
+A working web UI: national aggregate down to individual connection,
+Module B's case queue at any level, and a case detail view showing
+evidence plus (for this synthetic scenario only, clearly labelled)
+what was actually injected. Run it per "Running the demo" above.
+
+What it demonstrates, honestly: drilling from national to an individual
+connection works, as does opening a case and seeing it match synthetic
+ground truth (e.g. a vacancy case in the seeded demo scenario is
+correctly classified at 0.90 confidence, matching what was actually
+injected exactly). Section 12.4 also asks for a theft case distinguished
+from a solar case -- theft-family cases (partial/full bypass, meter
+failure) do appear correctly in the demo; solar does not reliably, for the
+structural reason documented above, and the demo does not pretend
+otherwise. Asset-health degradation trajectories (Module C) are not built
+at all and are out of scope for this interface.
+
+Deliberately out of scope for this first version: the six role-specific
+views of Section 11.4 (one unified operator view is built instead --
+splitting into role views is templating work once the underlying data
+model is proven, not a data or architecture question); the Section 7.2
+non-technical-loss residual chart (the equation is implemented and tested
+in `module_b/nontechnical_loss.py`, just not yet wired into the frontend);
+and geographic/schematic network rendering (Section 11.3 asks for a map
+view -- this version is table/tree/chart only, borrowing nothing yet from
+the open-source mapping libraries Section 13.3 names for that purpose).
 
 ## Known gaps (see conversation / design review for full discussion)
 

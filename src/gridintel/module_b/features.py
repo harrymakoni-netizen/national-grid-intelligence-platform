@@ -18,6 +18,26 @@ periods are a fixed fraction of the evaluation window (first/last 20% by
 default), which is a real simplification: a mistimed anomaly onset close
 to either boundary weakens the signal this captures. A fuller version
 would detect the changepoint itself rather than assume its rough location.
+
+A more fundamental limitation, confirmed with real numbers while building
+this rather than assumed: `daylight_fractional_change` and
+`evening_fractional_change` are structurally weak for solar detection
+specifically, because Module A's segment reconstruction (segment_
+reconstruction.py) can only vary the OVERALL SCALE of a connection's
+consumption per segment -- it always redistributes that scale using the
+SAME fixed archetype diurnal shape, never a changed one. A true solar
+adopter's real signature is a SHAPE change (daylight collapses, evening is
+untouched) -- verified on this generator's own ground truth: one solar
+case showed a true daylight change of -99.7% against a true evening change
+of +4.9% (noise). Module A's reconstruction of that same connection showed
+-84% for BOTH, because a single scaled-down copy of the same diurnal
+template cannot represent "only daylight changed" at all. This is why
+solar recall is the weakest part of Module B's results (see README) --
+it is an information gap between what Module A can output and what this
+discrimination needs, not a threshold to tune. Closing it would mean
+extending Module A to support intra-day shape adjustment, which vending
+events alone may not carry enough information to identify either -- this
+is flagged as a real open problem, not solved here.
 """
 from __future__ import annotations
 

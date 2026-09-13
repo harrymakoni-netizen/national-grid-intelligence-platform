@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>National Grid Intelligence Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          primary: '#1E40AF',
+          secondary: '#3B82F6',
+          accent: '#D97706',
+          background: '#F8FAFC',
+          foreground: '#1E3A8A',
+          card: '#FFFFFF',
+          muted: '#E9EEF6',
+          mutedfg: '#475569',
+          border: '#DBEAFE',
+          destructive: '#DC2626',
+        },
+        fontFamily: {
+          sans: ['Fira Sans', 'sans-serif'],
+          mono: ['Fira Code', 'monospace'],
+        },
+      },
+    },
+  };
+</script>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body class="bg-background text-foreground font-sans text-sm">
+
+<div id="synthetic-banner" class="bg-accent text-white text-center py-1.5 text-xs font-mono font-semibold tracking-wide">
+  SYNTHETIC DATA -- every figure on this page is generated, not measured. See "About this demo".
+</div>
+
+<header class="bg-primary text-white px-6 py-3 flex items-center justify-between shadow-sm">
+  <div class="flex items-center gap-3">
+    <h1 class="font-semibold text-lg">National Grid Intelligence Platform</h1>
+    <span class="text-blue-200 text-xs font-mono">drill-down demo</span>
+  </div>
+  <div class="flex items-center gap-3">
+    <label class="text-xs text-blue-100">Scenario</label>
+    <select id="scenario-select" class="text-sm rounded px-2 py-1 text-foreground"></select>
+  </div>
+</header>
+
+<main class="p-6 max-w-7xl mx-auto">
+
+  <nav id="breadcrumb" class="flex items-center gap-1 text-sm mb-4 font-mono flex-wrap"></nav>
+
+  <div id="model-performance" class="mb-4 hidden bg-card border border-border rounded-lg p-4 text-xs">
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+    <section class="lg:col-span-2 bg-card border border-border rounded-lg p-4">
+      <div class="flex items-baseline justify-between mb-2">
+        <h2 id="node-title" class="font-semibold text-base">Loading...</h2>
+        <span id="node-type-badge" class="text-xs font-mono px-2 py-0.5 rounded bg-muted text-mutedfg"></span>
+      </div>
+      <div class="text-xs text-mutedfg mb-3">
+        Aggregate estimated consumption (Module A reconstruction, summed over
+        <span id="node-conn-count">0</span> connections beneath this node)
+      </div>
+      <canvas id="node-chart" height="110"></canvas>
+    </section>
+
+    <section class="bg-card border border-border rounded-lg p-4">
+      <h2 class="font-semibold text-base mb-3">Network</h2>
+      <div id="children-list" class="space-y-1 text-sm"></div>
+    </section>
+
+  </div>
+
+  <section class="bg-card border border-border rounded-lg p-4 mt-4">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="font-semibold text-base">Case queue</h2>
+      <span class="text-xs text-mutedfg font-mono">ranked by confidence, then suspicion score</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-xs text-mutedfg border-b border-border">
+            <th class="py-1.5 pr-3">Connection</th>
+            <th class="py-1.5 pr-3">Predicted cause</th>
+            <th class="py-1.5 pr-3">Confidence</th>
+            <th class="py-1.5 pr-3">Suspicion</th>
+            <th class="py-1.5 pr-3">Recoverable (kW)</th>
+          </tr>
+        </thead>
+        <tbody id="case-table-body"></tbody>
+      </table>
+      <div id="case-table-empty" class="text-mutedfg text-xs py-4 hidden">No cases flagged beneath this node.</div>
+    </div>
+  </section>
+
+  <section class="bg-card border border-border rounded-lg p-4 mt-6">
+    <h2 class="font-semibold text-sm mb-2">About this demo</h2>
+    <p class="text-xs text-mutedfg leading-relaxed">
+      Every figure on this page comes from a synthetic scenario generated with known ground truth
+      (Section 12 of the build specification) -- there is no real ZETDC data anywhere in this
+      system yet. Consumption shown is Module A's reconstruction from simulated prepaid purchase
+      events, not privileged ground truth; case predictions come from Module B's weak-supervision
+      pipeline. Click a case to see its evidence and (for this synthetic scenario only) what was
+      actually injected, for validation.
+    </p>
+  </section>
+
+</main>
+
+<div id="case-modal" class="fixed inset-0 bg-black/40 hidden items-center justify-center p-4 z-50">
+  <div class="bg-card rounded-lg shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto p-6">
+    <div class="flex items-start justify-between mb-4">
+      <div>
+        <h3 id="modal-title" class="font-semibold text-lg font-mono"></h3>
+        <div id="modal-subtitle" class="text-xs text-mutedfg mt-1"></div>
+      </div>
+      <button id="modal-close" class="text-mutedfg hover:text-foreground text-xl leading-none">&times;</button>
+    </div>
+
+    <div id="modal-ground-truth" class="mb-4 hidden rounded p-3 text-sm"></div>
+
+    <canvas id="modal-chart" height="90"></canvas>
+
+    <h4 class="font-semibold text-sm mt-5 mb-2">Evidence</h4>
+    <table class="w-full text-xs font-mono">
+      <tbody id="modal-evidence"></tbody>
+    </table>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
