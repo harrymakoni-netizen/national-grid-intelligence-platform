@@ -53,7 +53,7 @@ DEFAULT_ANOMALY_RATES = {
 # regardless of whether they happen to be correct -- correctness is not yet
 # known to the system, only to the generator (Section 11.1).
 UNCONFIRMED_RECORD_CONFIDENCE = 0.7
-WRONG_RECORD_RATE = 0.15
+DEFAULT_WRONG_RECORD_RATE = 0.15
 
 
 @dataclass
@@ -71,6 +71,12 @@ class ScenarioConfig:
     anomaly_rates: dict[AnomalyType, float] = field(
         default_factory=lambda: dict(DEFAULT_ANOMALY_RATES)
     )
+    # Fraction of connections whose recorded association points at the
+    # wrong transformer (Section 11.1). Exposed as config -- not just a
+    # module constant -- so the digital twin's validation can construct a
+    # deliberately full-coverage scenario (rate=0) alongside the realistic
+    # default, to isolate solver correctness from knowledge-completeness.
+    wrong_record_rate: float = DEFAULT_WRONG_RECORD_RATE
 
     @property
     def end(self) -> pd.Timestamp:
@@ -160,7 +166,7 @@ def generate_scenario(session: Session, config: ScenarioConfig, *, seed: int) ->
     # construction) but not exposed to the association table itself.
     transformer_ids = [t.node_id for t in topology.transformers]
     for conn in topology.connections:
-        is_wrong = rng.random() < WRONG_RECORD_RATE and len(transformer_ids) > 1
+        is_wrong = rng.random() < config.wrong_record_rate and len(transformer_ids) > 1
         if is_wrong:
             wrong_choices = [t for t in transformer_ids if t != conn.transformer_node_id]
             assigned = str(rng.choice(wrong_choices))
@@ -173,6 +179,14 @@ def generate_scenario(session: Session, config: ScenarioConfig, *, seed: int) ->
             confidence=UNCONFIRMED_RECORD_CONFIDENCE,
             source_type="recorded",
             evidence={"note": "synthetic scenario initial record", "scenario_id": scenario_id},
+            # A wrong record carries no accompanying electrical survey --
+            # nobody has confirmed this connection's placement, so its
+            # distance/phase are simply unknown to the platform, not
+            # fabricated to match the (wrong) transformer it's pinned to.
+            # The digital twin can only place connections that are both
+            # correctly associated AND have a known placement.
+            distance_from_transformer_m=None if is_wrong else conn.distance_from_transformer_m,
+            phase=None if is_wrong else conn.phase,
         )
     session.flush()
 

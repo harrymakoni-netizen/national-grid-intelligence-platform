@@ -177,6 +177,18 @@ class ConnectionAssociation(Base):
     )
     evidence: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
+    # Per-connection LV electrical placement -- distance along the service
+    # drop and which of the three LV phases it is tapped to. Nullable
+    # because this is exactly the kind of detail a bare "recorded" legacy
+    # association usually lacks; it is populated once a field survey or
+    # confirmation visit establishes it (Section 7.3). The digital twin
+    # (Section 7) can only place a connection on its power-flow circuit
+    # when this is known -- a connection with a transformer association but
+    # no electrical placement is invisible to the twin's loss computation,
+    # which is itself a real, reportable limitation, not an oversight.
+    distance_from_transformer_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    phase: Mapped[int | None] = mapped_column(nullable=True)
+
     connection: Mapped["Connection"] = relationship(back_populates="associations")
     network_node: Mapped["NetworkNode"] = relationship()
 
@@ -313,6 +325,47 @@ class GroundTruthTechnicalLoss(Base):
 
     __table_args__ = (
         Index("ix_gttl_scenario_node_ts", "scenario_id", "network_node_id", "ts"),
+    )
+
+
+class ModelledTechnicalLoss(Base):
+    """The digital twin's OWN estimate of technical loss (Section 7),
+    computed from whatever consumption input and network knowledge the
+    platform actually has -- never from privileged ground truth.
+
+    This is distinct from GroundTruthTechnicalLoss, which only exists for
+    synthetic scenarios and represents loss as it truly occurred. Comparing
+    the two (scenario_id, network_node_id, ts all matching) is exactly
+    Section 15's acceptance test for the twin. In production there is no
+    ground-truth counterpart at all -- `scenario_id` is nullable for that
+    reason -- and this table is the only "modelled technical loss" the
+    platform has, becoming an input to loss attribution (Section 7.2)
+    later.
+
+    `coverage_fraction` records what proportion of connections associated
+    with this transformer actually had a known electrical placement
+    (distance + phase) and could be placed on the circuit. A twin result
+    computed from partial coverage is expected to understate true loss --
+    that gap is a real, informative signal about the completeness of the
+    network hierarchy (Section 11.1), not a modelling error.
+    """
+
+    __tablename__ = "modelled_technical_loss"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    scenario_id: Mapped[str | None] = mapped_column(
+        ForeignKey("synthetic_scenario.id"), nullable=True
+    )
+    network_node_id: Mapped[str] = mapped_column(
+        ForeignKey("network_node.id"), nullable=False
+    )
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    loss_kw: Mapped[float] = mapped_column(Float, nullable=False)
+    consumption_source: Mapped[str] = mapped_column(String(64), nullable=False)
+    coverage_fraction: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("ix_mtl_scenario_node_ts", "scenario_id", "network_node_id", "ts"),
     )
 
 

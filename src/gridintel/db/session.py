@@ -22,6 +22,7 @@ HYPERTABLES = {
     "sensor_reading": "ts",
     "ground_truth_consumption": "ts",
     "ground_truth_technical_loss": "ts",
+    "modelled_technical_loss": "ts",
 }
 
 

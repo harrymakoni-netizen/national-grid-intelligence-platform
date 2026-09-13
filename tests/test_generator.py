@@ -126,7 +126,7 @@ def test_bypass_anomaly_leaves_physical_unchanged_but_cuts_metered():
     conn = ConnectionSpec(
         connection_id="C1", transformer_node_id="T1", lv_feeder_node_id="F1",
         archetype=ConnectionArchetype.MEDIUM_DENSITY_RESIDENTIAL,
-        distance_from_transformer_m=50, service_drop_r_ohm=0.1, service_drop_x_ohm=0.01,
+        distance_from_transformer_m=50, service_drop_r_ohm=0.1, service_drop_x_ohm=0.01, phase=1,
     )
     out, records = anomalies.inject_anomalies(
         df, [conn],
@@ -151,7 +151,7 @@ def test_vacancy_anomaly_reduces_physical_consumption():
     conn = ConnectionSpec(
         connection_id="C1", transformer_node_id="T1", lv_feeder_node_id="F1",
         archetype=ConnectionArchetype.MEDIUM_DENSITY_RESIDENTIAL,
-        distance_from_transformer_m=50, service_drop_r_ohm=0.1, service_drop_x_ohm=0.01,
+        distance_from_transformer_m=50, service_drop_r_ohm=0.1, service_drop_x_ohm=0.01, phase=1,
     )
     out, records = anomalies.inject_anomalies(
         df, [conn],

@@ -1,8 +1,8 @@
-"""initial schema: network hierarchy, associations, synthetic ground truth
+"""initial schema: network hierarchy, associations, synthetic ground truth, digital twin
 
-Revision ID: 7dc7a3f828e8
+Revision ID: 3386d6356b00
 Revises: 
-Create Date: 2026-09-13 18:57:05.552066
+Create Date: 2026-09-13 19:24:22.027306
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '7dc7a3f828e8'
+revision: str = '3386d6356b00'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -63,6 +63,8 @@ def upgrade() -> None:
     sa.Column('effective_from', sa.DateTime(timezone=True), nullable=False),
     sa.Column('effective_to', sa.DateTime(timezone=True), nullable=True),
     sa.Column('evidence', sa.JSON(), nullable=False),
+    sa.Column('distance_from_transformer_m', sa.Float(), nullable=True),
+    sa.Column('phase', sa.Integer(), nullable=True),
     sa.CheckConstraint('confidence >= 0 AND confidence <= 1', name='ck_confidence_range'),
     sa.ForeignKeyConstraint(['connection_id'], ['connection.id'], ),
     sa.ForeignKeyConstraint(['network_node_id'], ['network_node.id'], ),
@@ -108,6 +110,19 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index('ix_gttl_scenario_node_ts', 'ground_truth_technical_loss', ['scenario_id', 'network_node_id', 'ts'], unique=False)
+    op.create_table('modelled_technical_loss',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('scenario_id', sa.String(length=64), nullable=True),
+    sa.Column('network_node_id', sa.String(length=64), nullable=False),
+    sa.Column('ts', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('loss_kw', sa.Float(), nullable=False),
+    sa.Column('consumption_source', sa.String(length=64), nullable=False),
+    sa.Column('coverage_fraction', sa.Float(), nullable=True),
+    sa.ForeignKeyConstraint(['network_node_id'], ['network_node.id'], ),
+    sa.ForeignKeyConstraint(['scenario_id'], ['synthetic_scenario.id'], ),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('ix_mtl_scenario_node_ts', 'modelled_technical_loss', ['scenario_id', 'network_node_id', 'ts'], unique=False)
     op.create_table('sensor_reading',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('device_id', sa.String(length=64), nullable=False),
@@ -146,6 +161,8 @@ def downgrade() -> None:
     op.drop_table('vending_event')
     op.drop_index('ix_sensor_node_ts', table_name='sensor_reading')
     op.drop_table('sensor_reading')
+    op.drop_index('ix_mtl_scenario_node_ts', table_name='modelled_technical_loss')
+    op.drop_table('modelled_technical_loss')
     op.drop_index('ix_gttl_scenario_node_ts', table_name='ground_truth_technical_loss')
     op.drop_table('ground_truth_technical_loss')
     op.drop_index('ix_gtc_scenario_connection_ts', table_name='ground_truth_consumption')
@@ -168,6 +185,7 @@ HYPERTABLES = {
     "sensor_reading": "ts",
     "ground_truth_consumption": "ts",
     "ground_truth_technical_loss": "ts",
+    "modelled_technical_loss": "ts",
 }
 
 

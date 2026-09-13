@@ -118,6 +118,8 @@ class ResolvedConnection:
     network_node_id: str
     confidence: float
     source_type: str
+    distance_from_transformer_m: float | None = None
+    phase: int | None = None
 
 
 def resolve_connections(
@@ -135,6 +137,14 @@ def resolve_connections(
     Callers must choose explicitly and the chosen mode must be stated
     alongside any number this feeds into -- see Section 15's requirement
     that estimated and confirmed figures never be conflated silently.
+
+    distance_from_transformer_m and phase are frequently None -- a bare
+    "recorded" association need carry no electrical survey data (Section
+    11.1). Callers that need to place a connection on a power-flow circuit
+    (the digital twin) must filter for both being non-null themselves; this
+    function does not silently drop unplaceable connections, since "how
+    many connections we can't place" is itself an operationally important
+    count.
     """
     node_ids = set(descendant_ids(session, root_id))
     stmt = (
@@ -143,6 +153,8 @@ def resolve_connections(
             ConnectionAssociation.network_node_id,
             ConnectionAssociation.confidence,
             ConnectionAssociation.source_type,
+            ConnectionAssociation.distance_from_transformer_m,
+            ConnectionAssociation.phase,
         )
         .where(ConnectionAssociation.effective_to.is_(None))
         .where(ConnectionAssociation.network_node_id.in_(node_ids))
@@ -162,6 +174,8 @@ def set_association(
     source_type: str,
     evidence: dict | None = None,
     as_of: datetime | None = None,
+    distance_from_transformer_m: float | None = None,
+    phase: int | None = None,
 ) -> ConnectionAssociation:
     """Record a (possibly corrected) connection-to-transformer association.
     Closes out whatever was previously current for this connection and
@@ -193,6 +207,8 @@ def set_association(
         effective_from=now,
         effective_to=None,
         evidence=evidence or {},
+        distance_from_transformer_m=distance_from_transformer_m,
+        phase=phase,
     )
     session.add(new_assoc)
     return new_assoc

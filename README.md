@@ -1,7 +1,8 @@
 # National Grid Intelligence Platform
 
-Milestone 1 (Section 13.1, items 1-3): network hierarchy data model,
-synthetic vending/network generator, ingestion and time-series storage.
+Build sequence (Section 13.1) items 1-4: network hierarchy data model,
+synthetic vending/network generator, ingestion and time-series storage,
+and the feeder digital twin.
 Full context: [docs/National_Grid_Intelligence_Platform_v3.md](docs/National_Grid_Intelligence_Platform_v3.md).
 
 ## Setup
@@ -32,6 +33,19 @@ docker compose up
   (Section 12.1). `scenario.generate_scenario()` is the entry point.
 - `src/gridintel/ingestion/` -- HTTP and MQTT ingestion, sharing one storage
   path (`store.py`) so synthetic and real device data go through identical code.
+- `src/gridintel/digitaltwin/` -- the feeder digital twin (Section 7).
+  `opendss_engine.py` is the single physics engine shared by the generator's
+  own ground-truth loss computation and the twin's operational one (so a
+  mismatch between them is always attributable to what data each was
+  given, never to two implementations disagreeing). `twin.py` computes
+  modelled loss from the database's CURRENT knowledge (only connections
+  with a confirmed association and a known electrical placement);
+  `validate.py` compares it against synthetic ground truth.
+- `src/gridintel/network_catalog.py` -- shared physical placeholder
+  constants (conductor R/X, transformer loss classes), used by both the
+  generator and the twin. Deliberately has no dependency on either, since
+  the twin must be able to run against a real feeder that was never
+  synthetically generated.
 - `migrations/` -- Alembic migrations. `alembic upgrade head` against
   either database backend.
 - `data/processed/` -- small, git-tracked reference artefacts derived from
@@ -63,12 +77,21 @@ with Session() as session:
     print(scenario.id)
 ```
 
-Then validate it against Section 15's acceptance criterion:
+Then validate it against Section 15's acceptance criterion for the generator:
 
 ```python
 from gridintel.gridsynth.validate import compare_to_reference_shape, check_anomaly_recoverability
 print(compare_to_reference_shape(session, scenario.id))
 print(check_anomaly_recoverability(session, scenario.id))
+```
+
+And for the digital twin -- how well the twin's loss estimate (computed
+from only what's currently associated and placed) tracks the generator's
+full-information ground truth:
+
+```python
+from gridintel.digitaltwin.validate import compare_twin_to_ground_truth
+print(compare_twin_to_ground_truth(session, scenario.id, "DS-DEMO-T01"))
 ```
 
 ## Known gaps (see conversation / design review for full discussion)
@@ -87,12 +110,31 @@ print(check_anomaly_recoverability(session, scenario.id))
   this milestone. See `ARCHETYPE_SHAPE_SOURCE` in `gridsynth/archetypes.py`.
 - **Physical network parameters (conductor R/X, transformer loss split)
   are representative placeholders**, not ZETDC measurements. Every such
-  value is marked `PLACEHOLDER` in `gridsynth/topology.py` and must be
+  value is marked `PLACEHOLDER` in `network_catalog.py` and must be
   confirmed against a feeder survey and reviewed by a power-systems
   engineer (Section 14.1) before being used for anything beyond internal
   development.
-- **The digital twin ground-truth loss model uses OpenDSS**, not
-  pandapower, specifically for the LV network's single-phase, unbalanced
-  loading -- see the module docstring in `gridsynth/lossmodel.py` for the
-  reasoning. This is a real architectural decision, not a default; confirm
-  it with the power-systems reviewer before Milestone 2.
+- **The technical-loss model uses OpenDSS**, not pandapower, specifically
+  for the LV network's single-phase, unbalanced loading -- see the module
+  docstring in `digitaltwin/opendss_engine.py` for the reasoning. This is a
+  real architectural decision, not a default; confirm it with the
+  power-systems reviewer before relying on it for a real feeder.
+- **The LV network is modelled as a star** of service-drop laterals direct
+  from the transformer busbar, not a shared trunk with laterals branching
+  off it. A real trunk+lateral LV feeder would show more loss (shared
+  conductor current, cumulative volt-drop along the trunk) than this star
+  simplification does -- see `network_catalog.py`'s note on
+  `LV_FEEDER_R_OHM_PER_KM`, which is currently unused by any power-flow
+  computation as a result. Close this gap before trusting twin loss
+  figures on a feeder with a non-trivial LV backbone.
+- **Twin coverage (fraction of connections placed) is not the same as
+  loss-accuracy coverage.** Testing the twin surfaced this directly: loss
+  scales with the square of current, so a twin missing a few
+  high-consumption (often industrial) connections can understate loss far
+  more than its connection-count coverage would suggest -- and, just as
+  easily, high coverage by count can still miss most of the loss if the
+  few missing connections happen to be the largest loads. Section 15's
+  "association accuracy" metric and Appendix B's pilot metric are both
+  currently defined as a plain fraction of connections; consider whether a
+  load-weighted variant is needed before either is used to represent twin
+  reliability to the utility.

@@ -3,14 +3,12 @@ distribution transformers, each with a star of LV service-drop laterals to
 individual connections.
 
 Physical parameters (conductor R/X, transformer impedance and loss split)
-are REPRESENTATIVE values for a typical 400V African LV network, not
-ZETDC-specific measurements -- there is no feeder survey to draw on yet
-(Section 7.3). Every such value is marked PLACEHOLDER below and must be
-confirmed against a real feeder survey or ZETDC network records, and
-reviewed by the power-systems engineer per Section 14.1, before this
-topology generator's output is used for anything beyond internal
-development. This mirrors the spec's own convention (Sections 6.2, 14) of
-labelling planning estimates as estimates rather than measurements.
+come from gridintel.network_catalog and are REPRESENTATIVE values for a
+typical 400V African LV network, not ZETDC-specific measurements -- see
+that module for the PLACEHOLDER markers, sourcing notes, and the star- vs
+trunk-topology limitation. Confirm against a real feeder survey or ZETDC
+network records, and have the power-systems engineer (Section 14.1) review
+before this topology generator's output is used beyond internal development.
 """
 from __future__ import annotations
 
@@ -19,30 +17,15 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from gridintel.db.models import ConnectionArchetype, NodeType
-
-# PLACEHOLDER: representative LV service-drop conductor, 16mm2 Cu, typical
-# published R/X per km for LV service cable. Confirm against ZETDC catalog.
-SERVICE_DROP_R_OHM_PER_KM = 1.15
-SERVICE_DROP_X_OHM_PER_KM = 0.09
-
-# PLACEHOLDER: representative LV feeder aerial bundled conductor (ABC),
-# 70mm2 AAAC, typical published R/X per km. Confirm against ZETDC catalog.
-LV_FEEDER_R_OHM_PER_KM = 0.443
-LV_FEEDER_X_OHM_PER_KM = 0.35
-
-# PLACEHOLDER: representative 11kV/400V distribution transformer nameplate
-# parameters by rating (kVA), typical IEC loss-class mid-range values.
-# no_load_loss_kw is roughly load-independent (core loss); load_loss_kw is
-# the loss at rated (full) load and scales ~ (load/rated)^2. Confirm against
-# ZETDC's actual transformer fleet nameplate data.
-TRANSFORMER_CATALOG = {
-    50: {"no_load_loss_kw": 0.19, "load_loss_kw": 1.10, "impedance_pct": 4.0},
-    100: {"no_load_loss_kw": 0.32, "load_loss_kw": 1.75, "impedance_pct": 4.0},
-    200: {"no_load_loss_kw": 0.52, "load_loss_kw": 2.75, "impedance_pct": 4.5},
-}
-
-MV_KV = 11.0
-LV_KV = 0.4
+from gridintel.network_catalog import (
+    LV_FEEDER_R_OHM_PER_KM,
+    LV_FEEDER_X_OHM_PER_KM,
+    LV_KV,
+    MV_KV,
+    SERVICE_DROP_R_OHM_PER_KM,
+    SERVICE_DROP_X_OHM_PER_KM,
+    TRANSFORMER_CATALOG,
+)
 
 ARCHETYPE_MIX_DEFAULT = {
     ConnectionArchetype.HIGH_DENSITY_LOW_INCOME: 0.45,
@@ -71,6 +54,13 @@ class ConnectionSpec:
     distance_from_transformer_m: float
     service_drop_r_ohm: float
     service_drop_x_ohm: float
+    # Which of the 3 LV phases this connection is single-phase-tapped to.
+    # Fixed once at topology construction -- this MUST be a stable,
+    # persisted property (not re-derived per loss computation), or the
+    # generator's own ground-truth loss and the digital twin's later
+    # re-solve of the same circuit could silently disagree about which
+    # phase carries which load.
+    phase: int
 
 
 @dataclass
@@ -167,6 +157,12 @@ def build_feeder_topology(
         archetype_idx_choices = rng.choice(
             len(archetypes), size=connections_per_transformer, p=weights
         )
+        # Round-robin phase assignment (balanced by design, imbalance then
+        # emerges from real load differences, not from lopsided phase
+        # allocation) -- fixed here, once, for the connection's lifetime.
+        phase_order = rng.permutation(connections_per_transformer)
+        phase_by_index = {int(pos): (i % 3) + 1 for i, pos in enumerate(phase_order)}
+
         for c_idx, idx in enumerate(archetype_idx_choices):
             archetype = archetypes[idx]
             connection_id = f"{feeder_id}-C{c_idx+1:03d}"
@@ -180,6 +176,7 @@ def build_feeder_topology(
                     distance_from_transformer_m=distance_m,
                     service_drop_r_ohm=SERVICE_DROP_R_OHM_PER_KM * distance_m / 1000,
                     service_drop_x_ohm=SERVICE_DROP_X_OHM_PER_KM * distance_m / 1000,
+                    phase=phase_by_index[c_idx],
                 )
             )
 
