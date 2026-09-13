@@ -6,6 +6,7 @@ opendssdirect.py
 numpy
 pandas
 scipy
+scikit-learn
 fastapi
 uvicorn[standard]
 pytest

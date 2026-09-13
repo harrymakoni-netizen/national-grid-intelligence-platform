@@ -293,6 +293,23 @@ def generate_scenario(session: Session, config: ScenarioConfig, *, seed: int) ->
     if anomaly_rows:
         session.execute(GroundTruthAnomaly.__table__.insert(), anomaly_rows)
 
+    # A vacated premises is, per Section 8.2, usually reflected "in most
+    # cases" by a corresponding customer-system record -- a real Tier 1
+    # signal Module B can use directly, rather than only inferring vacancy
+    # from consumption behaviour. Not set for other anomaly types: bypass,
+    # meter failure and solar adoption all involve an occupied premises
+    # with an ostensibly still-active account, which is exactly what makes
+    # them hard to tell apart from vacancy on consumption data alone.
+    vacant_connection_ids = [
+        rec.connection_id for rec in anomaly_records if rec.anomaly_type == AnomalyType.VACANCY
+    ]
+    if vacant_connection_ids:
+        session.execute(
+            Connection.__table__.update()
+            .where(Connection.id.in_(vacant_connection_ids))
+            .values(status="inactive")
+        )
+
     loss_df = compute_technical_losses(
         topology,
         physical.rename(columns={"kw_physical": "kw"})[["connection_id", "ts", "kw"]],

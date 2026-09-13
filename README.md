@@ -1,8 +1,10 @@
 # National Grid Intelligence Platform
 
-Build sequence (Section 13.1) items 1-5: network hierarchy data model,
-synthetic vending/network generator, ingestion and time-series storage,
-the feeder digital twin, and consumption reconstruction (Module A).
+Build sequence (Section 13.1) items 1-5 and 7: network hierarchy data
+model, synthetic vending/network generator, ingestion and time-series
+storage, the feeder digital twin, consumption reconstruction (Module A),
+and loss attribution (Module B). Item 6 (sensing device firmware) needs
+physical hardware and is out of scope here.
 Full context: [docs/National_Grid_Intelligence_Platform_v3.md](docs/National_Grid_Intelligence_Platform_v3.md).
 
 ## Setup
@@ -60,6 +62,17 @@ docker compose up
   against real data; `reconstruct_for_connection` is the DB adapter).
   `evaluate.py` implements Section 8.1's evaluation methodology, including
   the Section 12.2 held-out-real-data check.
+- `src/gridintel/module_b/` -- loss attribution (Section 8.2). `features.py`
+  builds per-connection features directly from Section 8.2's discriminating-
+  signature table, on top of Module A's reconstruction (not privileged
+  ground truth). `unsupervised.py` is an isolation-forest suspicion score
+  (Section 8.2's stage 1). `weak_supervision.py` is stage 2's labelling
+  functions plus a two-stage vote combiner. `pipeline.py` assembles the
+  ranked case queue; `evaluate.py` scores it (precision at the top of the
+  queue, by cause class, with meter-failure/full-bypass ambiguity reported
+  honestly). `nontechnical_loss.py` is Section 7.2's energy-balance
+  equation at transformer level. Stage 3 (supervised, on real field-
+  confirmed labels) is deliberately not built -- no real labels exist yet.
 - `migrations/` -- Alembic migrations. `alembic upgrade head` against
   either database backend.
 - `data/processed/` -- small, git-tracked reference artefacts derived from
@@ -188,6 +201,63 @@ version with clearly documented limits, not a finished solution; more
 segments (real vending history, once available) and less-invented
 purchasing behaviour are what would actually move it forward, not further
 tuning against this synthetic data.
+
+## Module B: loss attribution
+
+Section 8.2 calls this "the hardest and most valuable model in the
+platform." Built on top of Module A's (already imperfect) reconstruction
+rather than privileged ground truth, per the real production dependency
+chain -- so it inherits Module A's noise, and testing it end-to-end against
+synthetic data found four real bugs in the first pass, not just accuracy
+gaps:
+
+1. **Vote-splitting in the label combiner.** A flat plurality vote let a
+   single-cause hypothesis (e.g. "normal", one vote of 0.6) beat a
+   genuinely ambiguous meter-failure/full-bypass split (0.5 + 0.5 = 1.0
+   total anomaly evidence) purely because the anomaly evidence was divided
+   across two labels. Fixed by deciding "anomalous or not" and "which
+   cause" as two separate steps (`weak_supervision.classify`).
+2. **Solar's evening-preservation check was a bonus, not a gate.** A
+   connection whose evening consumption collapsed exactly as much as its
+   daylight consumption (a real vacancy case) was still classified as
+   solar because a spurious negative irradiance correlation (Module A
+   reconstruction noise on a near-zero series) was enough on its own.
+   Evening preservation is now a required condition.
+3. **The vacancy rule over-required corroborating signal.** Demanding zero
+   recent purchase activity IN ADDITION TO an inactive customer-system flag
+   excluded real vacancy cases where a habitual top-up landed in the
+   recent window on calendar timing alone, after physical consumption had
+   already collapsed. The customer-system flag is now sufficient by itself.
+4. **A purchase-gap feature looked in the wrong place.** Section 8.2 names
+   "sustained zero consumption with an active transformer implies meter
+   failure or bypass" directly -- implemented as a feature comparing the
+   longest purchase gap to a connection's own historical typical gap. The
+   first version only checked the CURRENTLY OPEN gap, missing a real
+   meter-failure case (confirmed in this generator's own output) where a
+   47-day silence was followed by one small habitual top-up before the
+   window ended, closing the gap that would otherwise have flagged it.
+
+**Honest results** (`build_case_queue` + `evaluate_case_queue`, averaged
+over 10 independent synthetic scenarios): precision over the WHOLE case
+queue is modest (~15% exact, ~20% treating meter-failure/full-bypass as
+one confusable outcome, since Section 8.2 itself says they're genuinely
+hard to tell apart). Precision restricted to the TOP of the ranked list --
+the metric Section 8.2 actually specifies, because inspector capacity is
+the binding constraint, not queue length -- is materially better: **~47%
+exact / ~50% confusable-aware at top-3** across the same 10 scenarios,
+dropping toward the whole-queue figure by top-10. This is the expected
+shape of the result and validates the ranking-by-confidence design, not
+just the classifier: the model doesn't know everything, but it is
+meaningfully better at knowing what it doesn't know. Solar and vacancy
+detection (clear, well-separated signatures) work well; meter-failure/full-
+bypass is the weakest category by volume of false positives, consistent
+with it being the genuinely hardest and most information-poor
+discrimination in Section 8.2's own table.
+
+Stage 3 (supervised gradient-boosted classification on real field-
+confirmed outcomes, Section 8.2) is not built. No real labels exist yet --
+building it against synthetic labels would risk the model looking "ready"
+in a way that wouldn't transfer, exactly the trap Section 15 warns against.
 
 ## Known gaps (see conversation / design review for full discussion)
 
