@@ -45,7 +45,16 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gridintel.db.models import Connection, GroundTruthConsumption, GroundTruthTechnicalLoss
+from gridintel.db.models import (
+    Connection,
+    ConnectionArchetype,
+    GroundTruthConsumption,
+    GroundTruthTechnicalLoss,
+)
+
+# Customer classes a real utility bills post-paid and therefore already has
+# meter reads for (Section 3.1) -- never reconstructed from vending events.
+METERED_ARCHETYPES = {ConnectionArchetype.INDUSTRIAL}
 from gridintel.digitaltwin.twin import compute_modelled_loss
 from gridintel.hierarchy.aggregate import resolve_connections
 from gridintel.module_a.reconstruct import reconstruct_for_connection
@@ -79,7 +88,30 @@ def _measured_inflow_kw(session: Session, scenario_id: str, transformer_node_id:
     return result
 
 
-def _reconstruct_all_connections(
+def _metered_series(session: Session, scenario_id: str, connection_id: str) -> pd.DataFrame:
+    """Stands in for the post-paid meter reading history a real deployment
+    WOULD have for an industrial/large-commercial account (Section 3.1
+    lists it as Tier 1 data, already held and already digital). Synthetic
+    ground truth is used here because there is no real utility feed --
+    the point is that this class of customer is not reconstructed from
+    vending events in production, so it must not be reconstructed here.
+    """
+    rows = session.execute(
+        select(GroundTruthConsumption.ts, GroundTruthConsumption.metered_kw)
+        .where(GroundTruthConsumption.scenario_id == scenario_id)
+        .where(GroundTruthConsumption.connection_id == connection_id)
+    ).all()
+    df = pd.DataFrame(rows, columns=["ts", "kw"])
+    if df.empty:
+        return df
+    df["ts"] = pd.to_datetime(df["ts"])
+    if df["ts"].dt.tz is None:
+        df["ts"] = df["ts"].dt.tz_localize("UTC")
+    df["connection_id"] = connection_id
+    return df[["connection_id", "ts", "kw"]]
+
+
+def _accounted_consumption(
     session: Session,
     scenario_id: str,
     transformer_node_id: str,
@@ -87,17 +119,43 @@ def _reconstruct_all_connections(
     start: pd.Timestamp,
     end: pd.Timestamp,
     interval_minutes: int,
-) -> pd.DataFrame:
-    """Long DataFrame (connection_id, ts, kw) of Module A's reconstruction
-    for every connection CURRENTLY associated with the transformer --
-    computed once and shared by both the accounted-energy sum and the
-    twin's per-connection input, rather than reconstructing twice.
+) -> tuple[pd.DataFrame, list[str]]:
+    """Long DataFrame (connection_id, ts, kw) of energy accounted to every
+    connection CURRENTLY associated with the transformer.
+
+    Prepaid connections use Module A's reconstruction. Industrial
+    connections use metered reads instead: Module A reconstructs
+    consumption from purchase timing, and an industrial customer buying in
+    rare bulk lots gives it almost nothing to work with -- on this
+    generator's own demo feeder a single industrial connection drawing
+    27.97 kW reconstructed at 4.37 kW, and that 23 kW gap landed in this
+    equation's residual looking exactly like theft. Since a real utility
+    bills these accounts post-paid and HAS their meter history (Section
+    3.1), reconstructing them here would manufacture a phantom loss from
+    a data source production would never use.
+
+    Returns the frame and the list of connection ids served from metered
+    reads, so callers can disclose it rather than hide it.
     """
     resolved = [
         r for r in resolve_connections(session, transformer_node_id) if r.network_node_id == transformer_node_id
     ]
-    frames = []
+    frames: list[pd.DataFrame] = []
+    metered_ids: list[str] = []
+
     for r in resolved:
+        connection = session.get(Connection, r.connection_id)
+        is_metered_class = (
+            connection is not None
+            and ConnectionArchetype(connection.archetype) in METERED_ARCHETYPES
+        )
+        if is_metered_class:
+            frame = _metered_series(session, scenario_id, r.connection_id)
+            if not frame.empty:
+                frames.append(frame)
+                metered_ids.append(r.connection_id)
+            continue
+
         try:
             result = reconstruct_for_connection(
                 session, r.connection_id, scenario_id, start=start, end=end, interval_minutes=interval_minutes
@@ -105,11 +163,12 @@ def _reconstruct_all_connections(
         except ValueError:
             continue
         frames.append(pd.DataFrame({"connection_id": r.connection_id, "ts": result.index, "kw": result.mean_kw}))
+
     if not frames:
-        return pd.DataFrame(columns=["connection_id", "ts", "kw"])
+        return pd.DataFrame(columns=["connection_id", "ts", "kw"]), metered_ids
     df = pd.concat(frames, ignore_index=True)
     df["kw"] = df["kw"].fillna(0.0)
-    return df
+    return df, metered_ids
 
 
 @dataclass
@@ -119,6 +178,7 @@ class NonTechnicalLossResult:
     energy_accounted_kw: pd.Series
     modelled_technical_loss_kw: pd.Series
     twin_coverage_fraction: float
+    metered_connection_ids: list[str]  # served from meter reads, not reconstructed
 
 
 def compute_nontechnical_loss(
@@ -132,7 +192,7 @@ def compute_nontechnical_loss(
 ) -> NonTechnicalLossResult:
     measured_inflow = _measured_inflow_kw(session, scenario_id, transformer_node_id)
 
-    per_connection_df = _reconstruct_all_connections(
+    per_connection_df, metered_ids = _accounted_consumption(
         session, scenario_id, transformer_node_id, start=start, end=end, interval_minutes=interval_minutes
     )
     energy_accounted = (
@@ -161,4 +221,5 @@ def compute_nontechnical_loss(
         energy_accounted_kw=combined["accounted"],
         modelled_technical_loss_kw=combined["modelled_loss"],
         twin_coverage_fraction=twin_result.coverage_fraction,
+        metered_connection_ids=metered_ids,
     )

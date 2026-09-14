@@ -1,0 +1,1 @@
+{"source": "UCI household power consumption dataset, last 90 days held out, never used to fit anything", "daily_mae_kw": 0.6168, "daily_relative_mae": 0.5579, "monthly_mae_kw": 0.3587, "p10_p90_coverage": 0.508}

@@ -1,0 +1,1 @@
+{"id": "DS-DEMO-T02-F1", "name": "LV Feeder 2.1", "node_type": "lv_feeder", "parent_id": "DS-DEMO-T02", "attributes": {"conductor": "70mm2 AAAC ABC (representative)", "r_ohm_per_km": 0.443, "x_ohm_per_km": 0.35, "latitude": -17.841023305525976, "longitude": 31.05908618506005}, "children": [], "connections": []}

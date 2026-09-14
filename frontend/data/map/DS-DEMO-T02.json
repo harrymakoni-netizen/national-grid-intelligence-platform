@@ -1,0 +1,1 @@
+{"points": [{"id": "DS-DEMO-T02", "name": "Transformer 2", "node_type": "transformer", "latitude": -17.841023305525976, "longitude": 31.05908618506005, "n_connections": 17, "n_cases": 5, "recoverable_kw": 0.294, "top_cause": "meter_failure", "rating_kva": 50.0}]}

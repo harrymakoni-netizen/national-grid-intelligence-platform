@@ -1,0 +1,1 @@
+{"id": "REG-DS-DEMO", "name": "Region (DS-DEMO)", "node_type": "region", "parent_id": "NAT-ZW", "attributes": {}, "children": [{"id": "PS-DS-DEMO", "name": "Primary Substation (DS-DEMO)", "node_type": "primary_substation"}], "connections": []}

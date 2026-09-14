@@ -1,0 +1,1 @@
+{"points": [{"id": "DS-DEMO-T01", "name": "Transformer 1", "node_type": "transformer", "latitude": -17.822625054834656, "longitude": 31.05073308255405, "n_connections": 16, "n_cases": 6, "recoverable_kw": 9.72, "top_cause": "partial_bypass", "rating_kva": 50.0}]}

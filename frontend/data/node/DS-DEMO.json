@@ -1,0 +1,1 @@
+{"id": "DS-DEMO", "name": "DS-DEMO", "node_type": "distribution_substation", "parent_id": "PS-DS-DEMO", "attributes": {}, "children": [{"id": "DS-DEMO-T01", "name": "Transformer 1", "node_type": "transformer"}, {"id": "DS-DEMO-T02", "name": "Transformer 2", "node_type": "transformer"}, {"id": "DS-DEMO-T03", "name": "Transformer 3", "node_type": "transformer"}], "connections": []}

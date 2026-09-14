@@ -18,12 +18,15 @@ import numpy as np
 
 from gridintel.db.models import ConnectionArchetype, NodeType
 from gridintel.network_catalog import (
+    FEEDER_FOOTPRINT_DEG,
     LV_FEEDER_R_OHM_PER_KM,
     LV_FEEDER_X_OHM_PER_KM,
     LV_KV,
     MV_KV,
     SERVICE_DROP_R_OHM_PER_KM,
     SERVICE_DROP_X_OHM_PER_KM,
+    SUBSTATION_BASE_LAT,
+    SUBSTATION_BASE_LON,
     TRANSFORMER_CATALOG,
 )
 
@@ -111,6 +114,13 @@ def build_feeder_topology(
 
     for t_idx in range(n_transformers):
         transformer_id = f"{substation_id}-T{t_idx+1:02d}"
+        # Synthetic geography: transformers scattered within a plausible
+        # feeder footprint around the substation. Like every other physical
+        # parameter in this generator these coordinates are invented, not
+        # surveyed -- they exist so the drill-down map has a realistic
+        # spatial layout to render, not as a claim about any real feeder.
+        t_lat = SUBSTATION_BASE_LAT + float(rng.uniform(-1, 1)) * FEEDER_FOOTPRINT_DEG
+        t_lon = SUBSTATION_BASE_LON + float(rng.uniform(-1, 1)) * FEEDER_FOOTPRINT_DEG
         rating = _pick_rating_kva(connections_per_transformer, rng)
         cat = TRANSFORMER_CATALOG[rating]
         transformer = TransformerSpec(
@@ -135,6 +145,8 @@ def build_feeder_topology(
                     "vector_group": transformer.vector_group,
                     "mv_kv": MV_KV,
                     "lv_kv": LV_KV,
+                    "latitude": t_lat,
+                    "longitude": t_lon,
                 },
             )
         )
@@ -150,6 +162,8 @@ def build_feeder_topology(
                     "conductor": "70mm2 AAAC ABC (representative)",
                     "r_ohm_per_km": LV_FEEDER_R_OHM_PER_KM,
                     "x_ohm_per_km": LV_FEEDER_X_OHM_PER_KM,
+                    "latitude": t_lat,
+                    "longitude": t_lon,
                 },
             )
         )

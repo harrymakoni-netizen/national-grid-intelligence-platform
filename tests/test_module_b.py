@@ -155,3 +155,54 @@ def test_nontechnical_loss_residual_is_small_under_full_coverage(session):
     assert result.twin_coverage_fraction == pytest.approx(1.0)
     assert len(result.series) > 0
     assert abs(result.series.mean()) < 0.2 * result.measured_inflow_kw.mean()
+
+
+def test_industrial_connections_accounted_from_meter_reads_not_reconstruction(session):
+    """Industrial customers buy in rare bulk lots, which Module A
+    reconstructs badly -- on the demo feeder one such connection drawing
+    27.97 kW reconstructed at 4.37 kW, and that 23 kW gap landed in the
+    energy-balance residual looking exactly like theft. A real utility
+    bills these accounts post-paid and already holds their meter reads
+    (Section 3.1), so the balance must not reconstruct them. This pins
+    that: an industrial connection is disclosed as meter-served, and the
+    residual stays small relative to inflow.
+    """
+    from gridintel.db.models import Connection, ConnectionArchetype
+    from gridintel.gridsynth.scenario import ScenarioConfig, generate_scenario
+    from gridintel.module_b.nontechnical_loss import compute_nontechnical_loss
+    from sqlalchemy import select
+
+    config = ScenarioConfig(
+        substation_id="DS-MODB4",
+        n_transformers=1,
+        connections_per_transformer=14,
+        start=pd.Timestamp("2026-01-05", tz="UTC"),
+        weeks=6,
+        interval_minutes=30,
+        # Force an industrial connection onto the feeder so the behaviour
+        # under test is actually exercised, not left to the archetype dice.
+        archetype_mix={
+            ConnectionArchetype.INDUSTRIAL: 0.2,
+            ConnectionArchetype.HIGH_DENSITY_LOW_INCOME: 0.4,
+            ConnectionArchetype.MEDIUM_DENSITY_RESIDENTIAL: 0.4,
+        },
+    )
+    scenario = generate_scenario(session, config, seed=11)
+    session.commit()
+
+    industrial_ids = [
+        c.id
+        for c in session.execute(select(Connection)).scalars()
+        if c.archetype == ConnectionArchetype.INDUSTRIAL.value
+    ]
+    assert industrial_ids, "scenario did not produce an industrial connection to test"
+
+    result = compute_nontechnical_loss(
+        session, scenario.id, "DS-MODB4-T01", start=config.start, end=config.end, interval_minutes=30
+    )
+
+    assert set(result.metered_connection_ids) <= set(industrial_ids)
+    assert result.metered_connection_ids, "industrial connections must be served from meter reads"
+    # Residual should be a plausible loss figure, not dominated by
+    # reconstruction error on the industrial customer.
+    assert abs(result.series.mean()) < 0.15 * result.measured_inflow_kw.mean()

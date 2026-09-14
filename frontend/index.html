@@ -4,138 +4,300 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>National Grid Intelligence Platform</title>
+<meta name="description" content="Revenue protection, loss detection and grid intelligence built for prepaid vending data." />
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
   tailwind.config = {
     theme: {
       extend: {
         colors: {
-          primary: '#1E40AF',
-          secondary: '#3B82F6',
+          navy: '#0F172A', navy2: '#1E293B',
+          primary: '#1E40AF', secondary: '#3B82F6',
           accent: '#D97706',
-          background: '#F8FAFC',
-          foreground: '#1E3A8A',
-          card: '#FFFFFF',
-          muted: '#E9EEF6',
-          mutedfg: '#475569',
-          border: '#DBEAFE',
-          destructive: '#DC2626',
+          bg: '#F1F5F9', card: '#FFFFFF',
+          ink: '#0F172A', muted: '#E2E8F0', mutedfg: '#64748B',
+          line: '#E2E8F0',
+          ok: '#16A34A', warn: '#F59E0B', bad: '#DC2626',
         },
         fontFamily: {
-          sans: ['Fira Sans', 'sans-serif'],
+          sans: ['Fira Sans', 'system-ui', 'sans-serif'],
           mono: ['Fira Code', 'monospace'],
         },
       },
     },
   };
 </script>
-<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="styles.css?v=2">
 </head>
-<body class="bg-background text-foreground font-sans text-sm">
+<body class="bg-bg text-ink font-sans text-[13.5px]">
 
-<div id="synthetic-banner" class="bg-accent text-white text-center py-1.5 text-xs font-mono font-semibold tracking-wide">
-  SYNTHETIC DATA -- every figure on this page is generated, not measured. See "About this demo".
+<!-- Synthetic data banner: required by Section 15, never removable -->
+<div class="bg-accent text-white text-center py-1 text-[11px] font-mono tracking-wide">
+  SYNTHETIC DATA &mdash; every figure is generated from a seeded scenario with known ground truth. No ZETDC data is used anywhere in this system.
 </div>
 
-<header class="bg-primary text-white px-6 py-3 flex items-center justify-between shadow-sm">
-  <div class="flex items-center gap-3">
-    <h1 class="font-semibold text-lg">National Grid Intelligence Platform</h1>
-    <span class="text-blue-200 text-xs font-mono">drill-down demo</span>
-  </div>
-  <div class="flex items-center gap-3">
-    <label class="text-xs text-blue-100">Scenario</label>
-    <select id="scenario-select" class="text-sm rounded px-2 py-1 text-foreground"></select>
-  </div>
-</header>
+<div class="flex min-h-screen">
 
-<main class="p-6 max-w-7xl mx-auto">
-
-  <nav id="breadcrumb" class="flex items-center gap-1 text-sm mb-4 font-mono flex-wrap"></nav>
-
-  <div id="model-performance" class="mb-4 hidden bg-card border border-border rounded-lg p-4 text-xs">
-  </div>
-
-  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-
-    <section class="lg:col-span-2 bg-card border border-border rounded-lg p-4">
-      <div class="flex items-baseline justify-between mb-2">
-        <h2 id="node-title" class="font-semibold text-base">Loading...</h2>
-        <span id="node-type-badge" class="text-xs font-mono px-2 py-0.5 rounded bg-muted text-mutedfg"></span>
+  <!-- Sidebar -->
+  <aside class="w-60 shrink-0 bg-navy text-slate-300 flex flex-col">
+    <div class="px-5 py-4 border-b border-white/10">
+      <div class="flex items-center gap-2">
+        <svg class="w-6 h-6 text-secondary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <div>
+          <div class="text-white font-semibold leading-tight text-sm">Grid Intelligence</div>
+          <div class="text-[10px] text-slate-400 font-mono">HJM Technologies</div>
+        </div>
       </div>
-      <div class="text-xs text-mutedfg mb-3">
-        Aggregate estimated consumption (Module A reconstruction, summed over
-        <span id="node-conn-count">0</span> connections beneath this node)
-      </div>
-      <canvas id="node-chart" height="110"></canvas>
-    </section>
-
-    <section class="bg-card border border-border rounded-lg p-4">
-      <h2 class="font-semibold text-base mb-3">Network</h2>
-      <div id="children-list" class="space-y-1 text-sm"></div>
-    </section>
-
-  </div>
-
-  <section class="bg-card border border-border rounded-lg p-4 mt-4">
-    <div class="flex items-center justify-between mb-3">
-      <h2 class="font-semibold text-base">Case queue</h2>
-      <span class="text-xs text-mutedfg font-mono">ranked by confidence, then suspicion score</span>
     </div>
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm">
-        <thead>
-          <tr class="text-left text-xs text-mutedfg border-b border-border">
-            <th class="py-1.5 pr-3">Connection</th>
-            <th class="py-1.5 pr-3">Predicted cause</th>
-            <th class="py-1.5 pr-3">Confidence</th>
-            <th class="py-1.5 pr-3">Suspicion</th>
-            <th class="py-1.5 pr-3">Recoverable (kW)</th>
-          </tr>
-        </thead>
-        <tbody id="case-table-body"></tbody>
-      </table>
-      <div id="case-table-empty" class="text-mutedfg text-xs py-4 hidden">No cases flagged beneath this node.</div>
+
+    <nav id="role-nav" class="flex-1 py-3 overflow-y-auto"></nav>
+
+    <div class="px-4 py-3 border-t border-white/10 text-[10px] text-slate-400 leading-relaxed">
+      <div class="font-mono mb-1">Scenario</div>
+      <select id="scenario-select" class="w-full text-[11px] rounded bg-navy2 text-slate-200 border border-white/10 px-2 py-1"></select>
     </div>
-  </section>
+  </aside>
 
-  <section class="bg-card border border-border rounded-lg p-4 mt-6">
-    <h2 class="font-semibold text-sm mb-2">About this demo</h2>
-    <p class="text-xs text-mutedfg leading-relaxed">
-      Every figure on this page comes from a synthetic scenario generated with known ground truth
-      (Section 12 of the build specification) -- there is no real ZETDC data anywhere in this
-      system yet. Consumption shown is Module A's reconstruction from simulated prepaid purchase
-      events, not privileged ground truth; case predictions come from Module B's weak-supervision
-      pipeline. Click a case to see its evidence and (for this synthetic scenario only) what was
-      actually injected, for validation.
-    </p>
-  </section>
-
-</main>
-
-<div id="case-modal" class="fixed inset-0 bg-black/40 hidden items-center justify-center p-4 z-50">
-  <div class="bg-card rounded-lg shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto p-6">
-    <div class="flex items-start justify-between mb-4">
+  <!-- Main -->
+  <div class="flex-1 min-w-0 flex flex-col">
+    <header class="bg-card border-b border-line px-6 py-3 flex items-center justify-between sticky top-0 z-30">
       <div>
-        <h3 id="modal-title" class="font-semibold text-lg font-mono"></h3>
-        <div id="modal-subtitle" class="text-xs text-mutedfg mt-1"></div>
+        <h1 id="view-title" class="font-semibold text-base leading-tight">Executive</h1>
+        <p id="view-subtitle" class="text-[11px] text-mutedfg"></p>
       </div>
-      <button id="modal-close" class="text-mutedfg hover:text-foreground text-xl leading-none">&times;</button>
-    </div>
+      <div id="view-context" class="text-[11px] text-mutedfg font-mono"></div>
+    </header>
 
-    <div id="modal-ground-truth" class="mb-4 hidden rounded p-3 text-sm"></div>
+    <main class="flex-1 p-5 space-y-5">
+      <div id="loading" class="text-mutedfg text-xs">Loading scenario&hellip;</div>
 
-    <canvas id="modal-chart" height="90"></canvas>
+      <!-- ============ EXECUTIVE ============ -->
+      <section data-view="executive" class="view hidden space-y-5">
+        <div id="exec-kpis" class="grid grid-cols-2 lg:grid-cols-4 gap-4"></div>
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+          <div class="lg:col-span-2 card">
+            <h2 class="card-title">Estimated network consumption</h2>
+            <p class="card-sub">Module A reconstruction, aggregated national &rarr; connection</p>
+            <canvas id="exec-chart" height="110"></canvas>
+          </div>
+          <div class="card">
+            <h2 class="card-title">Loss exposure by cause</h2>
+            <p class="card-sub">From the ranked case queue</p>
+            <canvas id="exec-cause-chart" height="180"></canvas>
+          </div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Highest-value open cases</h2>
+          <p class="card-sub">Ranked by model confidence; recoverable energy is an estimate, not a measurement</p>
+          <div id="exec-top-cases"></div>
+        </div>
+      </section>
 
-    <h4 class="font-semibold text-sm mt-5 mb-2">Evidence</h4>
-    <table class="w-full text-xs font-mono">
-      <tbody id="modal-evidence"></tbody>
-    </table>
+      <!-- ============ REVENUE PROTECTION ============ -->
+      <section data-view="revenue" class="view hidden space-y-5">
+        <div id="rev-kpis" class="grid grid-cols-2 lg:grid-cols-4 gap-4"></div>
+        <div class="grid grid-cols-1 lg:grid-cols-5 gap-5">
+          <div class="lg:col-span-3 card">
+            <h2 class="card-title">Case queue</h2>
+            <p class="card-sub">Ranked by confidence, then suspicion score &mdash; click a case for its evidence</p>
+            <div id="rev-case-table" class="overflow-x-auto"></div>
+          </div>
+          <div class="lg:col-span-2 card">
+            <h2 class="card-title">Geographic concentration</h2>
+            <p class="card-sub">Transformers sized by open cases (synthetic coordinates)</p>
+            <div id="rev-map" class="h-[320px] rounded border border-line"></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Queue precision <span class="badge-amber ml-2">validation only</span></h2>
+          <p class="card-sub">
+            Measured against synthetic ground truth. In a real deployment this number cannot exist until the
+            field loop returns confirmed outcomes (Section 10.1) &mdash; it is shown here to validate the model, not as a field result.
+          </p>
+          <div id="rev-precision" class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3"></div>
+        </div>
+      </section>
+
+      <!-- ============ NETWORK OPERATIONS ============ -->
+      <section data-view="network" class="view hidden space-y-5">
+        <div id="net-kpis" class="grid grid-cols-2 lg:grid-cols-4 gap-4"></div>
+        <div class="card">
+          <h2 class="card-title">Energy balance &mdash; non-technical loss (Section 7.2)</h2>
+          <p class="card-sub">
+            <span class="font-mono">Non-technical loss = energy into transformer &minus; energy accounted to customers &minus; modelled technical loss</span>
+          </p>
+          <div class="flex items-center gap-3 my-3">
+            <label class="text-[11px] text-mutedfg">Transformer</label>
+            <select id="net-transformer-select" class="text-xs rounded border border-line px-2 py-1"></select>
+            <span id="net-coverage" class="text-[11px] font-mono text-mutedfg"></span>
+          </div>
+          <canvas id="net-ntl-chart" height="100"></canvas>
+          <p id="net-ntl-note" class="text-[11px] text-mutedfg mt-3 leading-relaxed"></p>
+          <p class="text-[11px] text-mutedfg mt-3 leading-relaxed">
+            <strong>Energy into the transformer is sensor-emulated.</strong> No sensing hardware exists yet
+            (build item 6), so that term is computed from the scenario's own ground truth &mdash; exactly what a
+            perfect transformer monitor would report. The other two terms are genuine model output: Module A's
+            reconstruction and the digital twin's power-flow solution.
+          </p>
+        </div>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <div class="card">
+            <h2 class="card-title">Network map</h2>
+            <p class="card-sub">Transformer locations and load (synthetic coordinates)</p>
+            <div id="net-map" class="h-[300px] rounded border border-line"></div>
+          </div>
+          <div class="card">
+            <h2 class="card-title">Asset health &amp; remaining life</h2>
+            <div id="net-module-c" class="not-built"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SYSTEM CONTROL ============ -->
+      <section data-view="control" class="view hidden space-y-5">
+        <div class="card">
+          <h2 class="card-title">Observed system demand</h2>
+          <p class="card-sub">Historical reconstruction &mdash; <strong>not a forecast</strong></p>
+          <canvas id="ctl-chart" height="90"></canvas>
+        </div>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <div class="card">
+            <h2 class="card-title">Demand forecasting</h2>
+            <div id="ctl-module-d" class="not-built"></div>
+          </div>
+          <div class="card">
+            <h2 class="card-title">Load-shedding allocation</h2>
+            <div id="ctl-module-e" class="not-built"></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Load-shedding groups in effect</h2>
+          <p class="card-sub">The schedule each transformer's connections are subject to, as used to condition Module A</p>
+          <div id="ctl-shedding"></div>
+        </div>
+      </section>
+
+      <!-- ============ REGULATORY ============ -->
+      <section data-view="regulatory" class="view hidden space-y-5">
+        <div class="card">
+          <h2 class="card-title">Figure traceability</h2>
+          <p class="card-sub">
+            Section 11.3: every figure at every level must be traceable to the measurements that produced it.
+            Pick a figure and follow it down to source.
+          </p>
+          <div id="reg-trace" class="mt-3"></div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Reporting provenance</h2>
+          <div id="reg-provenance" class="text-[12px] leading-relaxed"></div>
+        </div>
+      </section>
+
+      <!-- ============ INDUSTRIAL ============ -->
+      <section data-view="industrial" class="view hidden space-y-5">
+        <div id="ind-kpis" class="grid grid-cols-2 lg:grid-cols-4 gap-4"></div>
+        <div class="card">
+          <h2 class="card-title">Industrial &amp; commercial connections</h2>
+          <p class="card-sub">Tenant view &mdash; consumption reconstructed from vending records</p>
+          <div id="ind-table" class="overflow-x-auto"></div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Process-level disaggregation (NILM)</h2>
+          <div id="ind-module-g" class="not-built"></div>
+        </div>
+      </section>
+
+      <!-- ============ NETWORK EXPLORER ============ -->
+      <section data-view="explorer" class="view hidden space-y-5">
+        <nav id="breadcrumb" class="flex items-center gap-1 text-xs font-mono flex-wrap"></nav>
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+          <div class="lg:col-span-2 card">
+            <div class="flex items-baseline justify-between">
+              <h2 id="node-title" class="card-title">&nbsp;</h2>
+              <span id="node-type-badge" class="badge-slate"></span>
+            </div>
+            <p class="card-sub">
+              Aggregate estimated consumption over <span id="node-conn-count">0</span> connections beneath this node
+            </p>
+            <canvas id="node-chart" height="110"></canvas>
+          </div>
+          <div class="card">
+            <h2 class="card-title">Network</h2>
+            <p class="card-sub">Drill down to a transformer, then to a connection</p>
+            <div id="children-list" class="mt-2 space-y-0.5 max-h-[340px] overflow-y-auto"></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Cases beneath this node</h2>
+          <div id="explorer-case-table" class="overflow-x-auto"></div>
+        </div>
+      </section>
+
+      <!-- ============ ABOUT ============ -->
+      <section data-view="about" class="view hidden space-y-5">
+        <div class="card">
+          <h2 class="card-title">What this is</h2>
+          <div class="text-[12.5px] leading-relaxed space-y-3 mt-2 max-w-3xl">
+            <p>
+              An AI system that gives an electricity utility a drillable view of its network and finds revenue
+              lost to theft, meter failure and undetected technical loss &mdash; built for the data ZETDC
+              actually has: <strong>prepaid vending transaction logs, not interval meter reads</strong>.
+            </p>
+            <p>
+              Every number in this interface is generated from a seeded synthetic scenario with known ground
+              truth. There is no ZETDC data in this system, and no relationship with ZETDC is represented.
+              That is deliberate: Section 12 of the specification governs building and validating the entire
+              platform before data access is requested.
+            </p>
+          </div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">What is built, and what is not</h2>
+          <div id="about-modules" class="mt-2"></div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Measured performance</h2>
+          <p class="card-sub">Stated numbers, not claims &mdash; Section 15 requires every figure to carry what it was computed on</p>
+          <div id="about-performance" class="mt-2 space-y-3"></div>
+        </div>
+      </section>
+
+    </main>
   </div>
 </div>
 
-<script src="/app.js"></script>
+<!-- Case detail modal -->
+<div id="case-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center p-4 z-50">
+  <div class="bg-card rounded-lg shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+    <div class="flex items-start justify-between p-5 border-b border-line sticky top-0 bg-card">
+      <div>
+        <h3 id="modal-title" class="font-semibold text-base font-mono"></h3>
+        <div id="modal-subtitle" class="text-[11px] text-mutedfg mt-1"></div>
+      </div>
+      <button id="modal-close" aria-label="Close" class="text-mutedfg hover:text-ink text-2xl leading-none px-2">&times;</button>
+    </div>
+    <div class="p-5">
+      <div id="modal-ground-truth" class="mb-4 hidden rounded p-3 text-[12px]"></div>
+      <canvas id="modal-chart" height="90"></canvas>
+      <h4 class="font-semibold text-[13px] mt-5 mb-2">Evidence</h4>
+      <table class="w-full text-[11.5px] font-mono"><tbody id="modal-evidence"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<script src="js/data.js?v=2"></script>
+<script src="js/charts.js?v=2"></script>
+<script src="js/views.js?v=2"></script>
+<script src="js/main.js?v=2"></script>
 </body>
 </html>

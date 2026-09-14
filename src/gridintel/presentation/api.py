@@ -36,7 +36,8 @@ from gridintel.db.session import make_engine, make_session_factory
 from gridintel.hierarchy.aggregate import ancestor_chain, descendant_ids, resolve_connections
 from gridintel.module_a.evaluate import evaluate_against_held_out_real_data
 from gridintel.module_a.reconstruct import reconstruct_for_connection
-from gridintel.module_b.features import compute_connection_features
+from gridintel.module_b.evaluate import evaluate_case_queue
+from gridintel.module_b.nontechnical_loss import compute_nontechnical_loss
 from gridintel.module_b.pipeline import build_case_queue, compute_features_for_transformer
 from gridintel.module_b.weak_supervision import classify
 from gridintel.presentation.aggregation import reconstructed_consumption_for_subtree
@@ -83,6 +84,7 @@ def list_scenarios(session: Session = Depends(get_session)):
             "substation_id": s.config.get("substation_id"),
             "weeks": s.config.get("weeks"),
             "created_at": s.created_at.isoformat(),
+            "config": s.config,
         }
         for s in rows
     ]
@@ -304,6 +306,188 @@ def module_a_held_out_evaluation():
         "daily_relative_mae": round(result.daily_relative_mae, 4),
         "monthly_mae_kw": round(result.monthly_mae, 4),
         "p10_p90_coverage": round(result.p10_p90_coverage, 3) if result.p10_p90_coverage == result.p10_p90_coverage else None,
+    }
+
+
+@app.get("/api/nodes/{node_id}/map")
+def node_map(node_id: str, scenario_id: str, session: Session = Depends(get_session)):
+    """Geographic layout for every transformer beneath a node, annotated
+    with its open case count -- Section 11.3's "geographic representation
+    at each level". Coordinates are synthetic (network_catalog.py), like
+    every other physical parameter in a generated scenario.
+    """
+    scenario = _get_scenario_or_404(session, scenario_id)
+    start, end, interval_minutes = _scenario_window(scenario)
+
+    points = []
+    for tid in _transformer_ids_under(session, node_id):
+        node = session.get(NetworkNode, tid)
+        if node is None or node.latitude is None or node.longitude is None:
+            continue
+        cases = build_case_queue(
+            session, tid, scenario_id, start=start, end=end, interval_minutes=interval_minutes
+        )
+        n_connections = len(
+            [r for r in resolve_connections(session, tid) if r.network_node_id == tid]
+        )
+        points.append(
+            {
+                "id": tid,
+                "name": node.name,
+                "node_type": node.node_type,
+                "latitude": node.latitude,
+                "longitude": node.longitude,
+                "n_connections": n_connections,
+                "n_cases": len(cases),
+                "recoverable_kw": round(sum(c.estimated_recoverable_kw for c in cases), 3),
+                "top_cause": cases[0].predicted_cause if cases else None,
+                "rating_kva": node.attributes.get("rating_kva"),
+            }
+        )
+    return {"points": points}
+
+
+@app.get("/api/nodes/{node_id}/nontechnical-loss")
+def node_nontechnical_loss(node_id: str, scenario_id: str, session: Session = Depends(get_session)):
+    """Section 7.2's energy balance for a single transformer. `measured_kw`
+    is sensor-EMULATED from synthetic ground truth -- no sensing hardware
+    exists yet (item 6) -- while accounted energy and modelled technical
+    loss come from Module A and the digital twin respectively.
+    """
+    scenario = _get_scenario_or_404(session, scenario_id)
+    start, end, interval_minutes = _scenario_window(scenario)
+
+    node = session.get(NetworkNode, node_id)
+    if node is None:
+        raise HTTPException(404, f"node {node_id!r} not found")
+    if node.node_type != NodeType.TRANSFORMER.value:
+        raise HTTPException(
+            400, "the energy-balance equation is defined at transformer level (Section 7.2)"
+        )
+
+    result = compute_nontechnical_loss(
+        session, scenario_id, node_id, start=start, end=end, interval_minutes=interval_minutes
+    )
+    daily = (
+        pd.DataFrame(
+            {
+                "measured": result.measured_inflow_kw,
+                "accounted": result.energy_accounted_kw,
+                "modelled_loss": result.modelled_technical_loss_kw,
+                "residual": result.series,
+            }
+        )
+        .resample("1D")
+        .mean()
+    )
+    return {
+        "ts": [t.isoformat() for t in daily.index],
+        "measured_kw": [round(float(v), 4) for v in daily["measured"]],
+        "accounted_kw": [round(float(v), 4) for v in daily["accounted"]],
+        "modelled_technical_loss_kw": [round(float(v), 4) for v in daily["modelled_loss"]],
+        "nontechnical_loss_kw": [round(float(v), 4) for v in daily["residual"]],
+        "twin_coverage_fraction": round(result.twin_coverage_fraction, 3),
+        "mean_nontechnical_loss_kw": round(float(result.series.mean()), 4),
+        "mean_measured_kw": round(float(result.measured_inflow_kw.mean()), 4),
+        "metered_connection_ids": result.metered_connection_ids,
+    }
+
+
+@app.get("/api/views/summary")
+def view_summary(scenario_id: str, session: Session = Depends(get_session)):
+    """Cross-cutting figures the role views share. Deliberately explicit
+    about which modules are NOT built, so a view can render an honest
+    "not available" state instead of a fabricated number.
+    """
+    scenario = _get_scenario_or_404(session, scenario_id)
+    start, end, interval_minutes = _scenario_window(scenario)
+    root = ancestor_chain(session, scenario.config["substation_id"])[0]
+
+    cases = []
+    for tid in _transformer_ids_under(session, root.id):
+        cases.extend(
+            build_case_queue(session, tid, scenario_id, start=start, end=end, interval_minutes=interval_minutes)
+        )
+    cases.sort(key=lambda e: (e.confidence, e.suspicion_score), reverse=True)
+
+    by_cause: dict[str, dict] = {}
+    for c in cases:
+        entry = by_cause.setdefault(c.predicted_cause, {"n": 0, "recoverable_kw": 0.0})
+        entry["n"] += 1
+        entry["recoverable_kw"] = round(entry["recoverable_kw"] + c.estimated_recoverable_kw, 3)
+
+    connections = session.execute(select(Connection)).scalars().all()
+    archetype_counts: dict[str, int] = {}
+    for conn in connections:
+        archetype_counts[conn.archetype] = archetype_counts.get(conn.archetype, 0) + 1
+
+    total_recoverable_kw = sum(c.estimated_recoverable_kw for c in cases)
+    transformer_ids = _transformer_ids_under(session, root.id)
+
+    return {
+        "scenario_id": scenario_id,
+        "root_id": root.id,
+        "n_transformers": len(transformer_ids),
+        "n_connections": len(connections),
+        "n_cases": len(cases),
+        "total_recoverable_kw": round(total_recoverable_kw, 3),
+        # 90 days is Section 17.1's pilot measurement window.
+        "recoverable_kwh_90d": round(total_recoverable_kw * 24 * 90, 1),
+        "cases_by_cause": by_cause,
+        "archetype_counts": archetype_counts,
+        "top_cases": [
+            {
+                "connection_id": c.connection_id,
+                "predicted_cause": c.predicted_cause,
+                "confidence": round(c.confidence, 3),
+                "estimated_recoverable_kw": round(c.estimated_recoverable_kw, 3),
+            }
+            for c in cases[:5]
+        ],
+        "modules_not_built": {
+            "C_asset_health": "Transformer health / remaining-life (Section 8.3) is not built.",
+            "D_demand_forecasting": "Demand forecasting (Section 8.4) is not built.",
+            "E_shedding_allocation": "Shedding optimisation (Section 9.1) is not built.",
+            "G_industrial_nilm": "Industrial load disaggregation (Section 9.3) is not built.",
+        },
+    }
+
+
+@app.get("/api/views/revenue-protection")
+def view_revenue_protection(scenario_id: str, session: Session = Depends(get_session)):
+    """Case-queue precision measured against synthetic ground truth. In a
+    real deployment this number cannot exist until the field loop returns
+    confirmed outcomes (Section 10.1) -- it is shown here as validation of
+    a synthetic scenario, and must be labelled as such.
+    """
+    scenario = _get_scenario_or_404(session, scenario_id)
+    start, end, interval_minutes = _scenario_window(scenario)
+    root = ancestor_chain(session, scenario.config["substation_id"])[0]
+
+    cases = []
+    for tid in _transformer_ids_under(session, root.id):
+        cases.extend(
+            build_case_queue(session, tid, scenario_id, start=start, end=end, interval_minutes=interval_minutes)
+        )
+    cases.sort(key=lambda e: (e.confidence, e.suspicion_score), reverse=True)
+
+    top3 = evaluate_case_queue(session, scenario_id, cases, k=3)
+    top5 = evaluate_case_queue(session, scenario_id, cases, k=5)
+    full = evaluate_case_queue(session, scenario_id, cases)
+
+    def _fmt(ev):
+        return {
+            "n_cases": ev.n_cases,
+            "exact_precision": None if ev.n_cases == 0 else round(ev.exact_precision, 3),
+            "confusable_aware_precision": None if ev.n_cases == 0 else round(ev.confusable_aware_precision, 3),
+            "by_cause": ev.by_cause,
+        }
+
+    return {
+        "validation_basis": "synthetic ground truth -- NOT field-confirmed outcomes",
+        "precision_at_3": _fmt(top3),
+        "precision_at_5": _fmt(top5),
+        "precision_full_queue": _fmt(full),
     }
 
 

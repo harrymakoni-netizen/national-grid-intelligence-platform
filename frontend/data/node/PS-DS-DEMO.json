@@ -1,0 +1,1 @@
+{"id": "PS-DS-DEMO", "name": "Primary Substation (DS-DEMO)", "node_type": "primary_substation", "parent_id": "REG-DS-DEMO", "attributes": {}, "children": [{"id": "DS-DEMO", "name": "DS-DEMO", "node_type": "distribution_substation"}], "connections": []}

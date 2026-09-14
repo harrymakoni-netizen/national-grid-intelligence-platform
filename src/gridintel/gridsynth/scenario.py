@@ -40,6 +40,7 @@ from gridintel.gridsynth.shedding import (
     generate_shedding_schedule,
 )
 from gridintel.gridsynth.topology import ARCHETYPE_MIX_DEFAULT, build_feeder_topology
+from gridintel.network_catalog import SUBSTATION_BASE_LAT, SUBSTATION_BASE_LON
 from gridintel.hierarchy.aggregate import add_node, set_association
 
 DEFAULT_ANOMALY_RATES = {
@@ -108,13 +109,18 @@ def _ensure_minimal_ancestor_chain(session: Session, substation_id: str) -> None
         return
 
     national_id, region_id, primary_id = "NAT-ZW", f"REG-{substation_id}", f"PS-{substation_id}"
+    lat, lon = SUBSTATION_BASE_LAT, SUBSTATION_BASE_LON
     if session.get(NetworkNode, national_id) is None:
-        add_node(session, id=national_id, node_type=NodeType.NATIONAL, name="Zimbabwe", parent_id=None)
+        add_node(session, id=national_id, node_type=NodeType.NATIONAL, name="Zimbabwe", parent_id=None,
+                 latitude=lat, longitude=lon)
     if session.get(NetworkNode, region_id) is None:
-        add_node(session, id=region_id, node_type=NodeType.REGION, name=f"Region ({substation_id})", parent_id=national_id)
+        add_node(session, id=region_id, node_type=NodeType.REGION, name=f"Region ({substation_id})", parent_id=national_id,
+                 latitude=lat, longitude=lon)
     if session.get(NetworkNode, primary_id) is None:
-        add_node(session, id=primary_id, node_type=NodeType.PRIMARY_SUBSTATION, name=f"Primary Substation ({substation_id})", parent_id=region_id)
-    add_node(session, id=substation_id, node_type=NodeType.DISTRIBUTION_SUBSTATION, name=substation_id, parent_id=primary_id)
+        add_node(session, id=primary_id, node_type=NodeType.PRIMARY_SUBSTATION, name=f"Primary Substation ({substation_id})", parent_id=region_id,
+                 latitude=lat, longitude=lon)
+    add_node(session, id=substation_id, node_type=NodeType.DISTRIBUTION_SUBSTATION, name=substation_id, parent_id=primary_id,
+             latitude=lat, longitude=lon)
     session.flush()
 
 
@@ -133,7 +139,18 @@ def generate_scenario(session: Session, config: ScenarioConfig, *, seed: int) ->
     )
 
     for parent_id, node_id, node_type, name, attributes in topology.node_records:
-        add_node(session, id=node_id, node_type=node_type, name=name, parent_id=parent_id, attributes=attributes)
+        # Coordinates ride along in `attributes` (keeps node_records a
+        # 5-tuple) but belong in the real columns, so lift them out here.
+        add_node(
+            session,
+            id=node_id,
+            node_type=node_type,
+            name=name,
+            parent_id=parent_id,
+            attributes=attributes,
+            latitude=attributes.get("latitude"),
+            longitude=attributes.get("longitude"),
+        )
     session.flush()
 
     tariff_band_by_archetype = {

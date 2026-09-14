@@ -48,3 +48,11 @@ TRANSFORMER_CATALOG = {
 
 MV_KV = 11.0
 LV_KV = 0.4
+
+# Synthetic geography for generated feeders: a plausible urban Harare
+# location so the drill-down map renders a realistic spatial layout.
+# INVENTED, like every other physical parameter here -- not a survey, and
+# not a claim about where any real ZETDC asset is.
+SUBSTATION_BASE_LAT = -17.8292
+SUBSTATION_BASE_LON = 31.0522
+FEEDER_FOOTPRINT_DEG = 0.012  # roughly +/-1.3 km, a plausible LV feeder footprint
