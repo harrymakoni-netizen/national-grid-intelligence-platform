@@ -1,12 +1,14 @@
 # Only frontend/ is deployed. Everything else is the Python platform, which
 # is not executed at request time (see scripts/export_static_api.py).
-src/
-tests/
-scripts/
-migrations/
-ops/
-docs/
-data/
+# Leading slashes matter: a bare `data/` would also match frontend/data/,
+# which IS the deployed snapshot.
+/src/
+/tests/
+/scripts/
+/migrations/
+/ops/
+/docs/
+/data/
 *.sqlite3
 *.log
 __pycache__/

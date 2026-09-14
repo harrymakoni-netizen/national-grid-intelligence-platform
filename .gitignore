@@ -14,3 +14,5 @@ data/generated/
 
 # frontend/data/ is the committed static snapshot the deployed demo serves --
 # intentionally NOT ignored (see scripts/export_static_api.py).
+
+.vercel
