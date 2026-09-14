@@ -105,6 +105,26 @@ const DataSource = (() => {
         ? getJSON('api/module-a/held-out-evaluation')
         : getJSON('data/held_out_evaluation.json');
     },
+    async assetHealth(scenarioId) {
+      return (await detect()) === 'live'
+        ? getJSON(`api/views/asset-health?scenario_id=${scenarioId}`)
+        : getJSON(staticPath('asset_health', [scenarioId]));
+    },
+    async nodeThermal(nodeId, scenarioId) {
+      return (await detect()) === 'live'
+        ? getJSON(`api/nodes/${nodeId}/thermal?scenario_id=${scenarioId}`)
+        : getJSON(staticPath('thermal', [nodeId]));
+    },
+    async forecast(scenarioId) {
+      return (await detect()) === 'live'
+        ? getJSON(`api/views/forecast?scenario_id=${scenarioId}`)
+        : getJSON(staticPath('forecast', [scenarioId]));
+    },
+    async shedding(scenarioId) {
+      return (await detect()) === 'live'
+        ? getJSON(`api/views/shedding?scenario_id=${scenarioId}`)
+        : getJSON(staticPath('shedding', [scenarioId]));
+    },
     async mode() {
       return detect();
     },

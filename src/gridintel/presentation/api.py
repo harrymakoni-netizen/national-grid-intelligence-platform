@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +38,17 @@ from gridintel.hierarchy.aggregate import ancestor_chain, descendant_ids, resolv
 from gridintel.module_a.evaluate import evaluate_against_held_out_real_data
 from gridintel.module_a.reconstruct import reconstruct_for_connection
 from gridintel.module_b.evaluate import evaluate_case_queue
+from gridintel.module_c.health import assess_transformer, rank_transformers
+from gridintel.module_c.thermal import HOT_SPOT_LIMIT_NORMAL_CYCLIC_C, REFERENCE_HOT_SPOT_C
+from gridintel.module_d.forecast import forecast_demand
+from gridintel.module_e.allocation import (
+    WEIGHT_CRITICAL,
+    WEIGHT_EQUITY,
+    WEIGHT_REVENUE,
+    WEIGHT_THERMAL_STRESS,
+    SheddableUnit,
+    allocate_shedding,
+)
 from gridintel.module_b.nontechnical_loss import compute_nontechnical_loss
 from gridintel.module_b.pipeline import build_case_queue, compute_features_for_transformer
 from gridintel.module_b.weak_supervision import classify
@@ -390,6 +402,231 @@ def node_nontechnical_loss(node_id: str, scenario_id: str, session: Session = De
         "mean_nontechnical_loss_kw": round(float(result.series.mean()), 4),
         "mean_measured_kw": round(float(result.measured_inflow_kw.mean()), 4),
         "metered_connection_ids": result.metered_connection_ids,
+    }
+
+
+@app.get("/api/views/asset-health")
+def view_asset_health(scenario_id: str, session: Session = Depends(get_session)):
+    """Module C stage 1: the physics-based thermal-ageing prior (Section
+    8.3). Not a survival model -- no failures have been observed to fit
+    one -- and the response says so rather than implying otherwise.
+    """
+    scenario = _get_scenario_or_404(session, scenario_id)
+    start, end, interval_minutes = _scenario_window(scenario)
+    root = ancestor_chain(session, scenario.config["substation_id"])[0]
+
+    ranked = rank_transformers(
+        session, scenario.id, root.id, start=start, end=end, interval_minutes=interval_minutes
+    )
+    return {
+        "basis": (
+            "IEC 60076-7 thermal ageing computed from reconstructed loading and real "
+            "Harare ambient temperature (NASA POWER). Physics-based prior only -- not a "
+            "survival model fitted to observed failures, of which there are none."
+        ),
+        "hot_spot_limit_normal_cyclic_c": HOT_SPOT_LIMIT_NORMAL_CYCLIC_C,
+        "reference_hot_spot_c": REFERENCE_HOT_SPOT_C,
+        "transformers": [
+            {
+                "transformer_id": h.transformer_id,
+                "name": h.name,
+                "rating_kva": h.rating_kva,
+                "peak_load_factor": round(h.peak_load_factor, 3),
+                "mean_load_factor": round(h.mean_load_factor, 3),
+                "peak_hot_spot_c": round(h.peak_hot_spot_c, 1),
+                "mean_ageing_rate": round(h.mean_ageing_rate, 4),
+                "hours_above_reference": round(h.hours_above_reference, 1),
+                "hours_above_cyclic_limit": round(h.hours_above_cyclic_limit, 1),
+                "projected_life_years": (
+                    round(h.projected_life_years, 1) if h.projected_life_years is not None else None
+                ),
+                "thermally_limited": h.thermally_limited,
+                "risk_band": h.risk_band,
+                "observed_days": round(h.observed_days, 1),
+            }
+            for h in ranked
+        ],
+    }
+
+
+@app.get("/api/nodes/{node_id}/thermal")
+def node_thermal(node_id: str, scenario_id: str, session: Session = Depends(get_session)):
+    """Hot-spot temperature trace for one transformer, daily peaks."""
+    scenario = _get_scenario_or_404(session, scenario_id)
+    start, end, interval_minutes = _scenario_window(scenario)
+
+    health = assess_transformer(
+        session, scenario_id, node_id, start=start, end=end,
+        interval_minutes=interval_minutes, include_series=True,
+    )
+    if health is None or health.thermal is None:
+        raise HTTPException(404, f"no thermal model available for {node_id!r}")
+
+    t = health.thermal
+    df = pd.DataFrame(
+        {"hot_spot": t.hot_spot_c, "top_oil": t.top_oil_c, "ambient": t.ambient_c,
+         "load_factor": t.load_factor},
+        index=t.ts,
+    )
+    daily_peak = df.resample("1D").max()
+    daily_mean = df.resample("1D").mean()
+    return {
+        "ts": [d.isoformat() for d in daily_peak.index],
+        "hot_spot_peak_c": [round(float(v), 1) for v in daily_peak["hot_spot"]],
+        "hot_spot_mean_c": [round(float(v), 1) for v in daily_mean["hot_spot"]],
+        "ambient_mean_c": [round(float(v), 1) for v in daily_mean["ambient"]],
+        "load_factor_peak": [round(float(v), 3) for v in daily_peak["load_factor"]],
+        "hot_spot_limit_c": HOT_SPOT_LIMIT_NORMAL_CYCLIC_C,
+        "reference_hot_spot_c": REFERENCE_HOT_SPOT_C,
+    }
+
+
+@app.get("/api/views/forecast")
+def view_forecast(scenario_id: str, session: Session = Depends(get_session)):
+    """Module D (Section 8.4). All accuracy figures are measured on a
+    held-out tail the model never saw during fitting."""
+    scenario = _get_scenario_or_404(session, scenario_id)
+    start, end, interval_minutes = _scenario_window(scenario)
+    root = ancestor_chain(session, scenario.config["substation_id"])[0]
+
+    df = reconstructed_consumption_for_subtree(
+        session, root.id, scenario_id, start=start, end=end, interval_minutes=interval_minutes
+    )
+    if df.empty:
+        raise HTTPException(404, "no reconstructed demand available to forecast")
+    demand = df.groupby("ts")["kw"].sum().sort_index()
+
+    result = forecast_demand(demand)
+    naive_mae = float(np.mean(np.abs(result.actual - result.actual.mean())))
+
+    frame = pd.DataFrame(
+        {"actual": result.actual, "predicted": result.predicted,
+         "lower": result.lower, "upper": result.upper},
+        index=result.ts,
+    ).resample("1D").mean()
+
+    return {
+        "basis": (
+            "Gradient-boosted quantile regression over lagged demand, calendar features, real "
+            "Harare temperature and shedding history. Trained on the earlier part of the window, "
+            "scored on a held-out tail it never saw."
+        ),
+        "target": "reconstructed feeder demand (Module A output), not metered demand",
+        "ts": [d.isoformat() for d in frame.index],
+        "actual_kw": [round(float(v), 3) for v in frame["actual"]],
+        "predicted_kw": [round(float(v), 3) for v in frame["predicted"]],
+        "lower_kw": [round(float(v), 3) for v in frame["lower"]],
+        "upper_kw": [round(float(v), 3) for v in frame["upper"]],
+        "mape_pct": round(result.mape, 2),
+        "mae_kw": round(result.mae_kw, 3),
+        "naive_mae_kw": round(naive_mae, 3),
+        "skill_vs_naive": round(1 - result.mae_kw / naive_mae, 3) if naive_mae > 0 else None,
+        "band_coverage": round(result.coverage, 3),
+        "band_nominal": result.nominal_coverage,
+        "horizon_hours": round(result.horizon_hours, 1),
+        "n_train": result.n_train,
+        "n_test": result.n_test,
+        "feature_importance": result.feature_importance,
+        "calibration_note": (
+            "Measured band coverage is well below nominal. The held-out period runs materially "
+            "higher in mean and variance than the calibration window, so intervals fitted to the "
+            "quieter regime are too narrow. Additive and multiplicative conformal widening were "
+            "both tried; neither transfers across that shift. Reported as measured rather than "
+            "tuned on the test period."
+        ),
+    }
+
+
+@app.get("/api/views/shedding")
+def view_shedding(
+    scenario_id: str,
+    available_generation_fraction: float = 0.75,
+    session: Session = Depends(get_session),
+):
+    """Module E (Section 9.1): constrained optimisation, NOT machine
+    learning -- the specification is explicit that presenting it as AI
+    would be inaccurate.
+
+    `available_generation_fraction` is an operator input (what share of
+    forecast peak demand generation can actually serve), not a prediction.
+    """
+    scenario = _get_scenario_or_404(session, scenario_id)
+    start, end, interval_minutes = _scenario_window(scenario)
+    root = ancestor_chain(session, scenario.config["substation_id"])[0]
+
+    health = {
+        h.transformer_id: h
+        for h in rank_transformers(
+            session, scenario_id, root.id, start=start, end=end, interval_minutes=interval_minutes
+        )
+    }
+
+    schedule_json = scenario.config.get("shedding_schedule_by_group") or {}
+    units = []
+    for transformer_id, h in health.items():
+        node = session.get(NetworkNode, transformer_id)
+        group = str(node.attributes.get("shedding_group", "0")) if node else "0"
+        # Hours already shed in this connection group over the window --
+        # the equity term. Derived from the published schedule, not invented.
+        windows = schedule_json.get(group, [])
+        hours_recent = sum(
+            ((w["end_hour"] - w["start_hour"]) % 24) or 0 for w in windows
+        ) * (scenario.config.get("weeks", 1))
+        peak_kw = h.peak_load_factor * h.rating_kva * 0.95
+
+        units.append(
+            SheddableUnit(
+                transformer_id=transformer_id,
+                name=h.name,
+                load_kw=round(peak_kw, 2),
+                # No connection in this generator is tagged as critical
+                # load -- there is no hospital/water/telecoms flag in the
+                # customer model, so this is False for every unit and the
+                # critical-load term is inert here. It is wired and
+                # weighted, waiting on a real customer criticality field.
+                carries_critical_load=False,
+                hours_shed_recently=hours_recent,
+                thermally_stressed=h.risk_band in ("high", "critical"),
+            )
+        )
+
+    total_peak = sum(u.load_kw for u in units)
+    requirement = max(total_peak * (1.0 - available_generation_fraction), 0.0)
+    result = allocate_shedding(units, requirement)
+
+    return {
+        "basis": (
+            "Mixed-integer optimisation (scipy.optimize.milp) over published policy weights. "
+            "Section 9.1 is explicit that this optimiser is not machine learning."
+        ),
+        "available_generation_fraction": available_generation_fraction,
+        "total_peak_kw": round(total_peak, 2),
+        "requirement_kw": round(result.requirement_kw, 2),
+        "shed_load_kw": round(result.shed_load_kw, 2),
+        "feasible": result.feasible,
+        "message": result.message,
+        "shed": result.shed,
+        "retained": result.retained,
+        "units": result.per_unit,
+        "policy_weights": {
+            "critical_load": WEIGHT_CRITICAL,
+            "equity_per_hour_already_shed": WEIGHT_EQUITY,
+            "thermal_stress": WEIGHT_THERMAL_STRESS,
+            "revenue_per_kw": WEIGHT_REVENUE,
+        },
+        "critical_load_note": (
+            "No customer in this generator carries a criticality flag (hospital, water, "
+            "telecoms), so that term is inert in this run. The constraint is implemented and "
+            "weighted; it needs a real customer criticality field to bind."
+        ),
+        "equity_note": (
+            "The equity term is also inert here, for a different reason: the generator builds "
+            "every shedding group with an identical 44 h/week burden, just time-offset, so no "
+            "group is behind any other on cumulative outage hours. On a real ZESA schedule, "
+            "where groups genuinely differ, this term is what stops the same suburbs absorbing "
+            "every block. What is actually driving the allocation in this run is load size and "
+            "thermal stress."
+        ),
     }
 
 

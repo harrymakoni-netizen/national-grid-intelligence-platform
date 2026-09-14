@@ -75,6 +75,7 @@ async function switchView(viewId) {
     console.error(`view ${viewId} failed`, err);
   }
   invalidateMaps();
+  resizeCharts();
 }
 
 async function loadScenario(scenarioId) {

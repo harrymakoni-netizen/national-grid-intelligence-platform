@@ -125,13 +125,25 @@ async function renderNetwork() {
   const mapData = await DataSource.nodeMap(State.rootId, State.scenarioId);
 
   const totalCases = mapData.points.reduce((a, p) => a + p.n_cases, 0);
+
+  let health = null;
+  try { health = await DataSource.assetHealth(State.scenarioId); } catch { /* panel handles it */ }
+  const flagged = health ? health.transformers.filter((t) => t.risk_band !== 'normal') : [];
+  const hottest = health && health.transformers.length
+    ? health.transformers.reduce((a, b) => (a.peak_hot_spot_c > b.peak_hot_spot_c ? a : b))
+    : null;
+
   document.getElementById('net-kpis').innerHTML = [
     kpi('Transformers', s.n_transformers, 'with a digital twin model'),
     kpi('Connections placed', mapData.points.reduce((a, p) => a + p.n_connections, 0),
         'resolved to a transformer'),
     kpi('Transformers with cases', mapData.points.filter((p) => p.n_cases > 0).length,
         `${totalCases} cases total`, totalCases ? 'warn' : 'ok'),
-    kpi('Asset health', 'not available', 'Module C not built'),
+    hottest
+      ? kpi('Peak hot-spot', `${fmtNum(hottest.peak_hot_spot_c, 1)} &deg;C`,
+            `${hottest.transformer_id} &middot; ${flagged.length} above normal`,
+            flagged.length ? 'warn' : 'ok')
+      : kpi('Asset health', '&mdash;', 'thermal model unavailable'),
   ].join('');
 
   const select = document.getElementById('net-transformer-select');
@@ -144,13 +156,81 @@ async function renderNetwork() {
 
   renderMap('net-map', mapData.points);
 
-  document.getElementById('net-module-c').innerHTML = notBuilt(
-    'Transformer health &amp; remaining useful life',
-    `Survival analysis over thermal, loading, harmonic and imbalance history requires the grid sensing
-     device (build item 6) to have accumulated real telemetry. No device exists yet, so there is no
-     hazard model, no remaining-life estimate and no thermal alarm here &mdash; showing one would be
-     fabricated.`,
-    'Specification Section 8.3 &middot; build sequence item 11');
+  await renderAssetHealth();
+}
+
+const RISK_BADGE = { normal: 'badge-green', elevated: 'badge-amber', high: 'badge-red', critical: 'badge-red' };
+
+async function renderAssetHealth() {
+  const el = document.getElementById('net-module-c');
+  let health;
+  try {
+    health = await DataSource.assetHealth(State.scenarioId);
+  } catch {
+    el.innerHTML = notBuilt('Transformer health', 'Asset health data unavailable.', 'Section 8.3');
+    return;
+  }
+
+  const rows = health.transformers.map((t) => {
+    const life = t.projected_life_years === null
+      ? '<span class="text-mutedfg">not thermally limited</span>'
+      : `${fmtNum(t.projected_life_years, 1)} y`;
+    const overLimit = t.hours_above_cyclic_limit > 0
+      ? `<span class="badge badge-red">${fmtNum(t.hours_above_cyclic_limit, 1)} h</span>`
+      : '<span class="text-mutedfg">0</span>';
+    return `<tr class="clickable" data-thermal="${t.transformer_id}">
+      <td class="font-mono">${t.transformer_id}</td>
+      <td>${fmtNum(t.rating_kva, 0)} kVA</td>
+      <td>${fmtNum(t.peak_load_factor, 2)}</td>
+      <td>${fmtNum(t.peak_hot_spot_c, 1)} &deg;C</td>
+      <td>${overLimit}</td>
+      <td>${fmtNum(t.mean_ageing_rate, 3)}</td>
+      <td>${life}</td>
+      <td><span class="badge ${RISK_BADGE[t.risk_band] || 'badge-slate'}">${t.risk_band}</span></td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="card-sub mb-2">${health.basis}</div>
+    <table class="data">
+      <thead><tr>
+        <th>Transformer</th><th>Rating</th><th>Peak load factor</th><th>Peak hot-spot</th>
+        <th>Hours &gt; ${health.hot_spot_limit_normal_cyclic_c}&deg;C</th><th>Ageing rate V</th>
+        <th>Thermal life</th><th>Risk</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="mt-3"><canvas id="thermal-chart" height="150"></canvas></div>
+    <div class="card-sub mt-2">
+      V is the insulation ageing rate relative to design (V=1 consumes life at exactly the rated
+      pace; V=2 is twice as fast). Remaining life is shown only where thermal ageing is actually the
+      binding constraint &mdash; at light loading it runs to centuries and says nothing true about
+      when a unit needs replacing. Failure modes this cannot see: moisture ingress, partial
+      discharge, bushing failure, vandalism.
+    </div>`;
+
+  el.querySelectorAll('tr[data-thermal]').forEach((tr) => {
+    tr.addEventListener('click', () => renderThermalChart(tr.dataset.thermal));
+  });
+  if (health.transformers.length) await renderThermalChart(health.transformers[0].transformer_id);
+}
+
+async function renderThermalChart(transformerId) {
+  const t = await DataSource.nodeThermal(transformerId, State.scenarioId);
+  const limit = t.ts.map(() => t.hot_spot_limit_c);
+  const ref = t.ts.map(() => t.reference_hot_spot_c);
+  lineChart('thermal-chart', t.ts.map((d) => d.slice(0, 10)), [
+    { label: `${transformerId} daily peak hot-spot`, data: t.hot_spot_peak_c,
+      borderColor: '#DC2626', backgroundColor: 'rgba(220,38,38,0.08)', fill: true, tension: 0.25, pointRadius: 0, borderWidth: 2 },
+    { label: 'Daily mean hot-spot', data: t.hot_spot_mean_c,
+      borderColor: '#EA580C', tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
+    { label: `IEC normal-cyclic limit (${t.hot_spot_limit_c}°C)`, data: limit,
+      borderColor: '#991B1B', borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5, fill: false },
+    { label: `Design reference (${t.reference_hot_spot_c}°C)`, data: ref,
+      borderColor: '#64748B', borderDash: [3, 3], pointRadius: 0, borderWidth: 1, fill: false },
+    { label: 'Ambient', data: t.ambient_mean_c,
+      borderColor: '#0EA5E9', tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
+  ], { legend: true, yTitle: '°C' });
 }
 
 async function renderNonTechnicalLoss(transformerId) {
@@ -187,6 +267,90 @@ async function renderNonTechnicalLoss(transformerId) {
 }
 
 /* ---------------- SYSTEM CONTROL ---------------- */
+async function renderForecast() {
+  const el = document.getElementById('ctl-module-d');
+  let f;
+  try {
+    f = await DataSource.forecast(State.scenarioId);
+  } catch {
+    el.innerHTML = notBuilt('Demand forecasting', 'Forecast unavailable.', 'Section 8.4');
+    return;
+  }
+
+  const skillPct = f.skill_vs_naive === null ? '&mdash;' : `${(f.skill_vs_naive * 100).toFixed(0)}%`;
+  const coverageBad = f.band_coverage < f.band_nominal - 0.1;
+
+  el.innerHTML = `
+    <div class="card-sub mb-2">${f.basis}</div>
+    <div class="grid grid-cols-2 gap-2 mb-3">
+      ${kpi('MAPE (held out)', `${fmtNum(f.mape_pct, 1)}%`, `over ${fmtNum(f.horizon_hours, 0)} h`, 'ok')}
+      ${kpi('MAE', `${fmtNum(f.mae_kw, 2)} kW`, `naive baseline ${fmtNum(f.naive_mae_kw, 2)} kW`, 'ok')}
+      ${kpi('Skill vs naive', skillPct, 'error reduction', 'ok')}
+      ${kpi('Band coverage', `${(f.band_coverage * 100).toFixed(0)}%`,
+            `nominal ${(f.band_nominal * 100).toFixed(0)}% &mdash; under-covering`, coverageBad ? 'warn' : 'ok')}
+    </div>
+    <canvas id="fc-chart" height="150"></canvas>
+    <div class="card-sub mt-2">
+      Target: ${f.target}. Trained on ${f.n_train} intervals, scored on ${f.n_test} held out.
+      Top features: ${Object.entries(f.feature_importance).slice(0, 3)
+        .map(([k, v]) => `<code>${k}</code> ${(v * 100).toFixed(0)}%`).join(', ')}.
+    </div>
+    <div class="not-built mt-2">
+      <span class="nb-title">Known weakness &mdash; band calibration</span>
+      ${f.calibration_note}
+    </div>`;
+
+  lineChart('fc-chart', f.ts.map((t) => t.slice(0, 10)), [
+    { label: 'Upper (p90)', data: f.upper_kw, borderColor: 'transparent',
+      backgroundColor: 'rgba(30,64,175,0.10)', fill: '+1', pointRadius: 0 },
+    { label: 'Lower (p10)', data: f.lower_kw, borderColor: 'transparent', fill: false, pointRadius: 0 },
+    { label: 'Actual (held out)', data: f.actual_kw, borderColor: '#0F172A',
+      tension: 0.25, pointRadius: 0, borderWidth: 2 },
+    { label: 'Forecast', data: f.predicted_kw, borderColor: '#1E40AF',
+      borderDash: [5, 3], tension: 0.25, pointRadius: 0, borderWidth: 2 },
+  ], { legend: true, yTitle: 'kW' });
+}
+
+async function renderShedding() {
+  const el = document.getElementById('ctl-module-e');
+  let s;
+  try {
+    s = await DataSource.shedding(State.scenarioId);
+  } catch {
+    el.innerHTML = notBuilt('Shedding allocation', 'Allocation unavailable.', 'Section 9.1');
+    return;
+  }
+
+  const rows = s.units.map((u) => `<tr>
+    <td class="font-mono">${u.transformer_id}</td>
+    <td>${fmtNum(u.load_kw, 1)} kW</td>
+    <td>${u.thermally_stressed ? '<span class="badge badge-red">stressed</span>' : '<span class="text-mutedfg">&mdash;</span>'}</td>
+    <td>${fmtNum(u.hours_shed_recently, 0)} h</td>
+    <td>${fmtNum(u.policy_cost, 1)}</td>
+    <td>${u.shed ? '<span class="badge badge-amber">SHED</span>' : '<span class="badge badge-green">retained</span>'}</td>
+  </tr>`).join('');
+
+  el.innerHTML = `
+    <div class="card-sub mb-2">${s.basis}</div>
+    <div class="grid grid-cols-2 gap-2 mb-3">
+      ${kpi('Feeder peak', `${fmtNum(s.total_peak_kw, 1)} kW`, 'sum of transformer peaks')}
+      ${kpi('Generation available', `${(s.available_generation_fraction * 100).toFixed(0)}%`, 'operator input, not a forecast')}
+      ${kpi('Shedding requirement', `${fmtNum(s.requirement_kw, 1)} kW`, 'peak minus available', 'warn')}
+      ${kpi('Allocated', `${fmtNum(s.shed_load_kw, 1)} kW`, s.feasible ? 'requirement met' : 'INFEASIBLE',
+            s.feasible ? 'ok' : 'bad')}
+    </div>
+    <table class="data">
+      <thead><tr><th>Transformer</th><th>Peak load</th><th>Thermal</th>
+        <th>Shed hrs (window)</th><th>Policy cost</th><th>Decision</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="card-sub mt-2"><strong>${s.message}</strong></div>
+    <div class="not-built mt-2">
+      <span class="nb-title">Two objective terms are inert in this scenario</span>
+      ${s.critical_load_note}<br><br>${s.equity_note}
+    </div>`;
+}
+
 async function renderControl() {
   const ts = await DataSource.nodeTimeseries(State.rootId, State.scenarioId);
   lineChart('ctl-chart', ts.ts.map((t) => t.slice(0, 10)), [{
@@ -195,20 +359,8 @@ async function renderControl() {
     fill: true, tension: 0.25, pointRadius: 0, borderWidth: 2,
   }], { legend: false, yTitle: 'kW' });
 
-  document.getElementById('ctl-module-d').innerHTML = notBuilt(
-    'Day-ahead and week-ahead demand forecasting',
-    `Gradient-boosted quantile regression over lagged demand, calendar features, temperature and
-     shedding history. The chart above is <strong>historical reconstruction only</strong> &mdash; there is
-     no forecast in this system, and the curve must not be read as one.`,
-    'Specification Section 8.4 &middot; build sequence item 11');
-
-  document.getElementById('ctl-module-e').innerHTML = notBuilt(
-    'Criticality-weighted shedding allocation',
-    `A mixed-integer optimisation balancing critical load protection, equity of cumulative outage hours,
-     transformer thermal stress and switching feasibility. It consumes a demand forecast, so it cannot be
-     built before Module D. Note the specification is explicit that this optimiser is
-     <em>not</em> machine learning and must not be presented as such.`,
-    'Specification Section 9.1 &middot; build sequence item 12');
+  await renderForecast();
+  await renderShedding();
 
   const cfg = State.scenarioConfig || {};
   const sched = cfg.shedding_schedule_by_group || {};
@@ -385,10 +537,11 @@ async function renderAbout() {
     ['Module A &mdash; consumption reconstruction', 'Section 8.1', true],
     ['Module B &mdash; loss attribution (stages 1&ndash;2)', 'Section 8.2', true],
     ['Drill-down interface', 'Section 11.3', true],
+    ['Module C &mdash; thermal ageing prior (IEC 60076-7)', 'Section 8.3', true],
+    ['Module D &mdash; demand forecasting', 'Section 8.4', true],
+    ['Module E &mdash; shedding allocation (MILP)', 'Section 9.1', true],
     ['Grid sensing device firmware', 'Section 6 &middot; item 6', false],
-    ['Module C &mdash; asset health / remaining life', 'Section 8.3', false],
-    ['Module D &mdash; demand forecasting', 'Section 8.4', false],
-    ['Module E &mdash; shedding allocation', 'Section 9.1', false],
+    ['Module C &mdash; survival model on observed failures', 'Section 8.3', false],
     ['Module G &mdash; industrial NILM', 'Section 9.3', false],
     ['Field operations app &amp; label feedback loop', 'Section 10 &middot; item 9', false],
     ['Module B stage 3 &mdash; supervised on field labels', 'Section 8.2', false],

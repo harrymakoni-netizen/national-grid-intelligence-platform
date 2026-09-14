@@ -72,6 +72,21 @@ def main() -> None:
             write("summary", [scenario_id], papi.view_summary(scenario_id, session))
             write("revenue", [scenario_id], papi.view_revenue_protection(scenario_id, session))
 
+            # Modules C, D and E. Each is a real computation, so each can
+            # fail on a scenario too short or too sparse to support it --
+            # in which case the UI falls back to its unavailable state
+            # rather than the export dying halfway through.
+            for kind, fn in (
+                ("asset_health", lambda: papi.view_asset_health(scenario_id, session)),
+                ("forecast", lambda: papi.view_forecast(scenario_id, session)),
+                ("shedding", lambda: papi.view_shedding(scenario_id, 0.75, session)),
+            ):
+                try:
+                    write(kind, [scenario_id], fn())
+                    print(f"  {kind}")
+                except Exception as exc:
+                    print(f"  {kind} skipped: {exc}")
+
             node_ids = descendant_ids(session, root.id)
             transformer_ids = []
 
@@ -84,6 +99,10 @@ def main() -> None:
                 if node.node_type == NodeType.TRANSFORMER.value:
                     transformer_ids.append(node_id)
                     write("ntl", [node_id], papi.node_nontechnical_loss(node_id, scenario_id, session))
+                    try:
+                        write("thermal", [node_id], papi.node_thermal(node_id, scenario_id, session))
+                    except Exception as exc:
+                        print(f"    thermal skipped for {node_id}: {exc}")
                 print(f"  node {node_id}")
 
             # Per-connection payloads for every connection the UI can reach.

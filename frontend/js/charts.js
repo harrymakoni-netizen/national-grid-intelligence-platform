@@ -6,11 +6,16 @@ Chart.defaults.color = '#64748B';
 
 const _charts = {};
 const _maps = {};
+const _observers = {};
 
 function destroyChart(id) {
   if (_charts[id]) {
     _charts[id].destroy();
     delete _charts[id];
+  }
+  if (_observers[id]) {
+    _observers[id].disconnect();
+    delete _observers[id];
   }
 }
 
@@ -41,7 +46,33 @@ function lineChart(canvasId, labels, datasets, opts = {}) {
       ...opts.extra,
     },
   });
-  return _charts[canvasId];
+  // Same problem Leaflet has below: a chart built while its panel is
+  // display:none measures a zero-width canvas and draws nothing until
+  // something forces a re-measure. Nudge it once the panel is visible.
+  const chart = _charts[canvasId];
+  // A chart built while its panel is display:none measures a zero-width
+  // canvas. Re-measuring alone is not enough -- the axes pick up the new
+  // width but the dataset keeps its stale geometry, which draws a line
+  // that stops part-way across a full-width axis. resize() then update()
+  // forces both. A ResizeObserver covers later container changes.
+  const refresh = () => { chart.resize(); chart.update('none'); };
+  requestAnimationFrame(refresh);
+  setTimeout(refresh, 80);
+
+  const parent = el.parentElement;
+  if (parent && typeof ResizeObserver !== 'undefined') {
+    if (_observers[canvasId]) _observers[canvasId].disconnect();
+    const ro = new ResizeObserver(() => {
+      if (_charts[canvasId]) refresh();
+    });
+    ro.observe(parent);
+    _observers[canvasId] = ro;
+  }
+  return chart;
+}
+
+function resizeCharts() {
+  Object.values(_charts).forEach((c) => { c.resize(); c.update('none'); });
 }
 
 function doughnutChart(canvasId, labels, values, colors) {
